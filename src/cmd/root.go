@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
@@ -145,6 +146,9 @@ func initEnvConfig() {
 	}
 	if envPresenceOnConnect := viper.GetString("whatsapp_presence_on_connect"); envPresenceOnConnect != "" {
 		config.WhatsappPresenceOnConnect = envPresenceOnConnect
+	}
+	if envVersion := viper.GetString("whatsapp_version"); envVersion != "" {
+		config.WhatsappVersion = envVersion
 	}
 
 	// Chatwoot settings
@@ -359,6 +363,18 @@ func initApp() {
 	err := utils.CreateFolder(config.PathQrCode, config.PathSendItems, config.PathStorages, config.PathMedia)
 	if err != nil {
 		logrus.Errorln(err)
+	}
+
+	// Apply custom WhatsApp Web version if configured
+	if config.WhatsappVersion != "" {
+		if ver, err := store.ParseVersion(config.WhatsappVersion); err != nil {
+			logrus.Warnf("Invalid WHATSAPP_VERSION '%s': %v — using default %s", config.WhatsappVersion, err, store.GetWAVersion())
+		} else {
+			store.SetWAVersion(ver)
+			logrus.Infof("WhatsApp Web version set to %s", ver)
+		}
+	} else {
+		logrus.Infof("WhatsApp Web version: %s (default)", store.GetWAVersion())
 	}
 
 	ctx := context.Background()

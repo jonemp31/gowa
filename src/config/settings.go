@@ -44,6 +44,7 @@ var (
 	WhatsappTypeLid                            = "@lid"
 	WhatsappAccountValidation                  = true
 	WhatsappPresenceOnConnect                  = "unavailable" // Presence to send on connect: "available", "unavailable", or "none"
+	WhatsappVersion                            = ""             // WhatsApp Web version override (e.g. "2.3000.1034187832"). Empty = use whatsmeow default.
 
 	ChatStorageURI               = "file:storages/chatstorage.db"
 	ChatStorageEnableForeignKeys = true
