@@ -232,6 +232,16 @@ func (service serviceSend) SendImage(ctx context.Context, request domainSend.Ima
 		oriImagePath   string
 	)
 
+	// Ensure temporary files are always removed, even on early returns
+	defer func() {
+		if len(deletedItems) > 0 {
+			go utils.RemoveFile(1, deletedItems...)
+		}
+	}()
+
+	// UUID prefix prevents filename collisions between concurrent requests
+	generateUUID := fiberUtils.UUIDv4()
+
 	if request.ImageURL != nil && *request.ImageURL != "" {
 		// Download image from URL
 		imageData, fileName, err := utils.DownloadImageFromURL(*request.ImageURL)
@@ -264,20 +274,20 @@ func (service serviceSend) SendImage(ctx context.Context, request domainSend.Ima
 			imageData = pngBuffer.Bytes()
 		}
 
-		oriImagePath = fmt.Sprintf("%s/%s", config.PathSendItems, fileName)
-		imageName = fileName
+		oriImagePath = fmt.Sprintf("%s/%s-%s", config.PathSendItems, generateUUID, fileName)
+		imageName = generateUUID + "-" + fileName
 		err = os.WriteFile(oriImagePath, imageData, 0644)
 		if err != nil {
 			return response, pkgError.InternalServerError(fmt.Sprintf("failed to save downloaded image %v", err))
 		}
 	} else if request.Image != nil {
 		// Save image to server
-		oriImagePath = fmt.Sprintf("%s/%s", config.PathSendItems, request.Image.Filename)
+		oriImagePath = fmt.Sprintf("%s/%s-%s", config.PathSendItems, generateUUID, request.Image.Filename)
 		err = fasthttp.SaveMultipartFile(request.Image, oriImagePath)
 		if err != nil {
 			return response, err
 		}
-		imageName = request.Image.Filename
+		imageName = generateUUID + "-" + request.Image.Filename
 	}
 	deletedItems = append(deletedItems, oriImagePath)
 
@@ -361,12 +371,6 @@ func (service serviceSend) SendImage(ctx context.Context, request domainSend.Ima
 		caption = "🖼️ " + request.Caption
 	}
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, caption)
-	go func() {
-		errDelete := utils.RemoveFile(0, deletedItems...)
-		if errDelete != nil {
-			fmt.Println("error when deleting picture: ", errDelete)
-		}
-	}()
 	if err != nil {
 		return response, err
 	}
