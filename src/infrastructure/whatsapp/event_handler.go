@@ -39,7 +39,21 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 		handlePairSuccess(ctx, evt)
 	case *events.LoggedOut:
 		handleLoggedOut(ctx, instance, chatStorageRepo)
-	case *events.Connected, *events.PushNameSetting:
+	case *events.Connected:
+		handleConnectionEvents(ctx, client, instance)
+		if instance != nil && len(config.WhatsappWebhook) > 0 {
+			ForwardConnectionEvent(map[string]any{
+				"event": "connection",
+				"payload": map[string]any{
+					"device_id": instance.ID(),
+					"jid":       instance.JID(),
+					"name":      instance.DisplayName(),
+					"state":     string(instance.State()),
+					"timestamp": time.Now().Unix(),
+				},
+			}, "connection")
+		}
+	case *events.PushNameSetting:
 		handleConnectionEvents(ctx, client, instance)
 	case *events.StreamReplaced:
 		handleStreamReplaced(ctx)
@@ -146,6 +160,16 @@ func handlePairSuccess(ctx context.Context, evt *events.PairSuccess) {
 	}
 	primaryDB, secondaryDB := getStoreContainers()
 	syncKeysDevice(ctx, primaryDB, secondaryDB)
+
+	if len(config.WhatsappWebhook) > 0 {
+		ForwardConnectionEvent(map[string]any{
+			"event": "login_success",
+			"payload": map[string]any{
+				"jid":       evt.ID.String(),
+				"timestamp": time.Now().Unix(),
+			},
+		}, "login_success")
+	}
 }
 
 func handleLoggedOut(ctx context.Context, instance *DeviceInstance, chatStorageRepo domainChatStorage.IChatStorageRepository) {
@@ -170,6 +194,17 @@ func handleLoggedOut(ctx context.Context, instance *DeviceInstance, chatStorageR
 		Code:    "LOGOUT_COMPLETE",
 		Message: "Remote logout cleanup completed - device removed from server",
 		Result:  map[string]string{"device_id": deviceID},
+	}
+
+	if len(config.WhatsappWebhook) > 0 {
+		ForwardConnectionEvent(map[string]any{
+			"event": "disconnection",
+			"payload": map[string]any{
+				"device_id": deviceID,
+				"reason":    "remote_logout",
+				"timestamp": time.Now().Unix(),
+			},
+		}, "disconnection")
 	}
 }
 
@@ -207,6 +242,17 @@ func handleConnectionEvents(_ context.Context, client *whatsmeow.Client, instanc
 }
 
 func handleStreamReplaced(_ context.Context) {
+	if len(config.WhatsappWebhook) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = forwardPayloadToConfiguredWebhooks(ctx, map[string]any{
+			"event": "stream_replaced",
+			"payload": map[string]any{
+				"reason":    "another_client_connected",
+				"timestamp": time.Now().Unix(),
+			},
+		}, "stream_replaced")
+		cancel()
+	}
 	os.Exit(0)
 }
 

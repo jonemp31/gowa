@@ -187,6 +187,14 @@ func (service *serviceApp) Logout(ctx context.Context, deviceID string) error {
 		},
 	}
 
+	whatsapp.ForwardConnectionEvent(map[string]any{
+		"event": "device_removed",
+		"payload": map[string]any{
+			"device_id": deviceID,
+			"timestamp": time.Now().Unix(),
+		},
+	}, "device_removed")
+
 	return nil
 }
 

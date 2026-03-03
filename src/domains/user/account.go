@@ -76,6 +76,18 @@ type ChangePushNameRequest struct {
 	PushName string `json:"push_name" form:"push_name"`
 }
 
+type SaveContactRequest struct {
+	Phone     string `json:"phone" form:"phone"`
+	FullName  string `json:"full_name" form:"full_name"`
+	FirstName string `json:"first_name" form:"first_name"`
+}
+
+type SaveContactResponse struct {
+	JID       string `json:"jid"`
+	FullName  string `json:"full_name"`
+	FirstName string `json:"first_name"`
+}
+
 type CheckRequest struct {
 	Phone string `json:"phone" query:"phone"`
 }

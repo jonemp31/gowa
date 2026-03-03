@@ -16,7 +16,9 @@ import (
 	"github.com/disintegration/imaging"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
+	"go.mau.fi/whatsmeow/proto/waSyncAction"
 	"go.mau.fi/whatsmeow/types"
+	"google.golang.org/protobuf/proto"
 )
 
 type serviceUser struct {
@@ -313,6 +315,54 @@ func (service serviceUser) ChangePushName(ctx context.Context, request domainUse
 		return err
 	}
 	return nil
+}
+
+func (service serviceUser) SaveContact(ctx context.Context, request domainUser.SaveContactRequest) (response domainUser.SaveContactResponse, err error) {
+	err = validations.ValidateSaveContact(ctx, request)
+	if err != nil {
+		return response, err
+	}
+
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return response, pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	dataWaRecipient, err := utils.ValidateJidWithLogin(client, request.Phone)
+	if err != nil {
+		return response, err
+	}
+
+	fullName := request.FullName
+	firstName := request.FirstName
+	if firstName == "" {
+		firstName = fullName
+	}
+
+	patchInfo := appstate.PatchInfo{
+		Type: appstate.WAPatchCriticalUnblockLow,
+		Mutations: []appstate.MutationInfo{{
+			Index:   []string{appstate.IndexContact, dataWaRecipient.String()},
+			Version: 2,
+			Value: &waSyncAction.SyncActionValue{
+				ContactAction: &waSyncAction.ContactAction{
+					FullName:  proto.String(fullName),
+					FirstName: proto.String(firstName),
+				},
+			},
+		}},
+	}
+
+	err = client.SendAppState(ctx, patchInfo)
+	if err != nil {
+		return response, err
+	}
+
+	response.JID = dataWaRecipient.String()
+	response.FullName = fullName
+	response.FirstName = firstName
+	return response, nil
 }
 
 func (service serviceUser) IsOnWhatsApp(ctx context.Context, request domainUser.CheckRequest) (response domainUser.CheckResponse, err error) {

@@ -18,6 +18,11 @@ type IUserProfile interface {
 	ChangePushName(ctx context.Context, request ChangePushNameRequest) (err error)
 }
 
+// IUserContact handles contact management operations
+type IUserContact interface {
+	SaveContact(ctx context.Context, request SaveContactRequest) (response SaveContactResponse, err error)
+}
+
 // IUserListing handles user listing operations
 type IUserListing interface {
 	MyListGroups(ctx context.Context) (response MyListGroupsResponse, err error)
@@ -36,4 +41,5 @@ type IUserUsecase interface {
 	IUserProfile
 	IUserListing
 	IUserPrivacy
+	IUserContact
 }

@@ -23,6 +23,7 @@ func InitRestUser(app fiber.Router, service domainUser.IUserUsecase) User {
 	app.Get("/user/my/contacts", rest.UserMyListContacts)
 	app.Get("/user/check", rest.UserCheck)
 	app.Get("/user/business-profile", rest.UserBusinessProfile)
+	app.Post("/user/contact", rest.UserSaveContact)
 
 	return rest
 }
@@ -156,6 +157,26 @@ func (controller *User) UserChangePushName(c *fiber.Ctx) error {
 		Status:  200,
 		Code:    "SUCCESS",
 		Message: "Success change push name",
+	})
+}
+
+func (controller *User) UserSaveContact(c *fiber.Ctx) error {
+	var request domainUser.SaveContactRequest
+	err := c.BodyParser(&request)
+	utils.PanicIfNeeded(err)
+
+	utils.SanitizePhone(&request.Phone)
+
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+
+	response, err := controller.Service.SaveContact(ctx, request)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success save contact",
+		Results: response,
 	})
 }
 

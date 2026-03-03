@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"mime"
 	"net/http"
 	"os"
@@ -79,6 +80,20 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 	}()
 
 	return ts, nil
+}
+
+// simulateChatPresence sends a typing/recording indicator to the recipient for a random
+// duration before sending the actual message, simulating human-like behavior.
+// presenceMedia: types.ChatPresenceMediaText for typing, types.ChatPresenceMediaAudio for recording.
+// minSec/maxSec: random delay range in seconds.
+func (service serviceSend) simulateChatPresence(ctx context.Context, client *whatsmeow.Client, recipient types.JID, presenceMedia types.ChatPresenceMedia, minSec, maxSec int) {
+	delay := time.Duration(minSec+rand.Intn(maxSec-minSec+1)) * time.Second
+	_ = client.SendChatPresence(ctx, recipient, types.ChatPresenceComposing, presenceMedia)
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+	}
+	_ = client.SendChatPresence(ctx, recipient, types.ChatPresencePaused, presenceMedia)
 }
 
 func (service serviceSend) SendText(ctx context.Context, request domainSend.MessageRequest) (response domainSend.GenericResponse, err error) {
@@ -180,6 +195,8 @@ func (service serviceSend) SendText(ctx context.Context, request domainSend.Mess
 			logrus.Warnf("Reply message ID %s not found in storage, continuing without reply context", *request.ReplyMessageID)
 		}
 	}
+
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaText, 5, 14)
 
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, request.Message)
 	if err != nil {
@@ -1167,6 +1184,8 @@ func (service serviceSend) SendAudio(ctx context.Context, request domainSend.Aud
 
 	content := "🎵 Audio"
 
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaAudio, 6, 15)
+
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, content)
 	if err != nil {
 		return response, err
@@ -1255,20 +1274,29 @@ func (service serviceSend) SendChatPresence(ctx context.Context, request domainS
 	var messageID string
 	var statusMessage string
 
+	var presenceMedia types.ChatPresenceMedia
+
 	switch request.Action {
 	case "start":
 		presenceType = types.ChatPresenceComposing
+		presenceMedia = types.ChatPresenceMediaText
 		messageID = "chat-presence-start"
 		statusMessage = fmt.Sprintf("Send chat presence start typing success %s", request.Phone)
+	case "recording":
+		presenceType = types.ChatPresenceComposing
+		presenceMedia = types.ChatPresenceMediaAudio
+		messageID = "chat-presence-recording"
+		statusMessage = fmt.Sprintf("Send chat presence recording audio success %s", request.Phone)
 	case "stop":
 		presenceType = types.ChatPresencePaused
+		presenceMedia = types.ChatPresenceMediaText
 		messageID = "chat-presence-stop"
 		statusMessage = fmt.Sprintf("Send chat presence stop typing success %s", request.Phone)
 	default:
-		return response, fmt.Errorf("invalid action: %s. Must be 'start' or 'stop'", request.Action)
+		return response, fmt.Errorf("invalid action: %s. Must be 'start', 'recording' or 'stop'", request.Action)
 	}
 
-	err = client.SendChatPresence(ctx, userJid, presenceType, types.ChatPresenceMedia(""))
+	err = client.SendChatPresence(ctx, userJid, presenceType, presenceMedia)
 	if err != nil {
 		return response, err
 	}

@@ -378,6 +378,21 @@ func isEventWhitelisted(eventName string) bool {
 	return false
 }
 
+// ForwardConnectionEvent sends a connection lifecycle event to all configured webhooks.
+// It runs asynchronously in a goroutine. Exported for use by the usecase layer.
+func ForwardConnectionEvent(payload map[string]any, eventName string) {
+	if len(config.WhatsappWebhook) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := forwardPayloadToConfiguredWebhooks(ctx, payload, eventName); err != nil {
+			logrus.Errorf("Failed to forward %s event to webhook: %v", eventName, err)
+		}
+	}()
+}
+
 // getGroupName fetches the group name from WhatsApp using the group JID.
 // Uses a TTL cache to avoid repeated API calls for the same group.
 func getGroupName(ctx context.Context, groupJID string) string {
