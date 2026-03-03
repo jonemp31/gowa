@@ -23,9 +23,10 @@ type proxyState struct {
 
 // ProxyManager manages a pool of proxies with health checking and balanced assignment.
 type ProxyManager struct {
-	mu      sync.RWMutex
-	proxies []*proxyState
-	stopCh  chan struct{}
+	mu          sync.RWMutex
+	proxies     []*proxyState
+	stopCh      chan struct{}
+	onProxyDown func(proxyURL string) // callback when a proxy is marked DOWN
 }
 
 var (
@@ -76,6 +77,17 @@ func InitProxyManager() {
 // GetProxyManager returns the global proxy manager (may be nil if no proxies configured).
 func GetProxyManager() *ProxyManager {
 	return globalProxyManager
+}
+
+// RegisterOnProxyDown sets a callback that fires when a proxy transitions from healthy to DOWN.
+// The callback runs in a separate goroutine so it won't block health checks.
+func (pm *ProxyManager) RegisterOnProxyDown(fn func(proxyURL string)) {
+	if pm == nil {
+		return
+	}
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.onProxyDown = fn
 }
 
 // SelectProxy picks a healthy proxy with the fewest assigned devices (balanced).
@@ -230,6 +242,8 @@ func (pm *ProxyManager) checkAll() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
+	var newlyDown []string
+
 	for i, p := range pm.proxies {
 		p.LastChecked = time.Now()
 
@@ -246,6 +260,7 @@ func (pm *ProxyManager) checkAll() {
 				p.Healthy = false
 				logrus.Errorf("[PROXY] ✗ Proxy %s is DOWN (failed %d consecutive checks)", maskProxyURL(p.URL), p.ConsecutiveFails)
 				p.LastLoggedDown = time.Now()
+				newlyDown = append(newlyDown, p.URL)
 			} else if !p.Healthy {
 				// Re-log every 15 minutes while still down
 				if time.Since(p.LastLoggedDown) >= 15*time.Minute {
@@ -253,6 +268,14 @@ func (pm *ProxyManager) checkAll() {
 					p.LastLoggedDown = time.Now()
 				}
 			}
+		}
+	}
+
+	// Fire callbacks for newly-downed proxies (in goroutines to not block)
+	if len(newlyDown) > 0 && pm.onProxyDown != nil {
+		cb := pm.onProxyDown
+		for _, downURL := range newlyDown {
+			go cb(downURL)
 		}
 	}
 }

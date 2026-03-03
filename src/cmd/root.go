@@ -406,6 +406,13 @@ func initApp() {
 	dm := whatsapp.GetDeviceManager()
 	if dm != nil {
 		_ = dm.LoadExistingDevices(ctx)
+
+		// Register proxy failover: auto-migrate devices when a proxy goes down
+		if pm := whatsapp.GetProxyManager(); pm != nil {
+			pm.RegisterOnProxyDown(func(proxyURL string) {
+				dm.MigrateDevicesFromProxy(proxyURL)
+			})
+		}
 	}
 
 	// Usecase

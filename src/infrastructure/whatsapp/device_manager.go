@@ -642,3 +642,78 @@ func (m *DeviceManager) StoreInfo() (dbURI, keysURI string) {
 	}
 	return config.DBURI, config.DBKeysURI
 }
+
+// MigrateDevicesFromProxy moves all devices using the given (dead) proxy to a healthy replacement.
+// It disconnects the old client, sets the new proxy, and reconnects.
+func (m *DeviceManager) MigrateDevicesFromProxy(downProxyURL string) {
+	if m == nil || downProxyURL == "" {
+		return
+	}
+
+	pm := GetProxyManager()
+	if pm == nil {
+		return
+	}
+
+	// Collect affected devices
+	m.mu.RLock()
+	var affected []*DeviceInstance
+	for _, inst := range m.devices {
+		if inst.ProxyURL() == downProxyURL {
+			affected = append(affected, inst)
+		}
+	}
+	m.mu.RUnlock()
+
+	if len(affected) == 0 {
+		return
+	}
+
+	logrus.Warnf("[PROXY_MIGRATION] Proxy %s is DOWN — migrating %d device(s)", maskProxyURL(downProxyURL), len(affected))
+
+	for _, inst := range affected {
+		// Get fresh counts for balanced selection
+		counts := m.GetDeviceProxyCounts()
+		newProxy := pm.FindHealthyReplacement(downProxyURL, counts)
+
+		if newProxy == "" {
+			logrus.Errorf("[PROXY_MIGRATION] No healthy replacement for device %s — device stays disconnected", inst.ID())
+			continue
+		}
+
+		logrus.Infof("[PROXY_MIGRATION] Migrating device %s: %s → %s", inst.ID(), maskProxyURL(downProxyURL), maskProxyURL(newProxy))
+
+		// Update proxy on the instance
+		inst.SetProxyURL(newProxy)
+
+		// Persist to DB
+		if m.storage != nil {
+			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				DeviceID:    inst.ID(),
+				DisplayName: inst.DisplayName(),
+				JID:         inst.JID(),
+				ProxyURL:    newProxy,
+			})
+		}
+
+		// Disconnect old client and reconnect with new proxy
+		cli := inst.GetClient()
+		if cli == nil {
+			continue
+		}
+
+		cli.Disconnect()
+
+		if err := cli.SetProxyAddress(newProxy); err != nil {
+			logrus.Errorf("[PROXY_MIGRATION] Failed to set new proxy on device %s: %v", inst.ID(), err)
+			continue
+		}
+
+		if err := cli.Connect(); err != nil {
+			logrus.Errorf("[PROXY_MIGRATION] Failed to reconnect device %s via new proxy: %v", inst.ID(), err)
+		} else {
+			inst.UpdateStateFromClient()
+			logrus.Infof("[PROXY_MIGRATION] Device %s successfully migrated to %s", inst.ID(), maskProxyURL(newProxy))
+		}
+	}
+}
