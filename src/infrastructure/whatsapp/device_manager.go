@@ -332,6 +332,7 @@ func (m *DeviceManager) LoadExistingDevices(ctx context.Context) error {
 				_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 					DeviceID: orphanDevice.ID(),
 					JID:      jid,
+					ProxyURL: orphanDevice.ProxyURL(),
 				})
 			}
 			continue
@@ -487,8 +488,11 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 
 	// Apply proxy if assigned to this device
 	if proxyURL := inst.ProxyURL(); proxyURL != "" {
-		client.SetProxyAddress(proxyURL)
-		logrus.Infof("[DEVICE_MANAGER] applying proxy %s to device %s", maskProxyURL(proxyURL), deviceID)
+		if err := client.SetProxyAddress(proxyURL); err != nil {
+			logrus.Errorf("[DEVICE_MANAGER] failed to apply proxy %s to device %s: %v", maskProxyURL(proxyURL), deviceID, err)
+		} else {
+			logrus.Infof("[DEVICE_MANAGER] applying proxy %s to device %s", maskProxyURL(proxyURL), deviceID)
+		}
 	}
 
 	repo := inst.GetChatStorage()

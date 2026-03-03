@@ -206,14 +206,34 @@ func (pm *ProxyManager) healthLoop() {
 }
 
 func (pm *ProxyManager) checkAll() {
+	// Snapshot URLs under read lock to avoid holding write lock during network I/O
+	pm.mu.RLock()
+	urls := make([]string, len(pm.proxies))
+	for i, p := range pm.proxies {
+		urls[i] = p.URL
+	}
+	pm.mu.RUnlock()
+
+	// Run health checks in parallel, outside any lock
+	results := make([]bool, len(urls))
+	var wg sync.WaitGroup
+	for i, u := range urls {
+		wg.Add(1)
+		go func(idx int, proxyURL string) {
+			defer wg.Done()
+			results[idx] = checkProxy(proxyURL)
+		}(i, u)
+	}
+	wg.Wait()
+
+	// Now acquire write lock only to update state (fast, no I/O)
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	for _, p := range pm.proxies {
-		healthy := checkProxy(p.URL)
+	for i, p := range pm.proxies {
 		p.LastChecked = time.Now()
 
-		if healthy {
+		if results[i] {
 			if !p.Healthy {
 				logrus.Infof("[PROXY] ✓ Proxy %s is back UP", maskProxyURL(p.URL))
 			}
