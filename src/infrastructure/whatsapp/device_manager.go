@@ -56,6 +56,7 @@ func (m *DeviceManager) AddDevice(instance *DeviceInstance) {
 			DeviceID:    instance.ID(),
 			DisplayName: instance.DisplayName(),
 			JID:         instance.JID(),
+			ProxyURL:    instance.ProxyURL(),
 			CreatedAt:   instance.CreatedAt(),
 			UpdatedAt:   time.Now(),
 		})
@@ -214,6 +215,16 @@ func (m *DeviceManager) CreateDevice(ctx context.Context, requestedID string) (*
 	}
 
 	instance := NewDeviceInstance(id, nil, newDeviceChatStorage(id, m.storage))
+
+	// Assign proxy from pool if available
+	if pm := GetProxyManager(); pm != nil {
+		counts := m.getDeviceProxyCountsLocked()
+		if proxyURL := pm.SelectProxy(counts); proxyURL != "" {
+			instance.SetProxyURL(proxyURL)
+			logrus.Infof("[DEVICE_MANAGER] assigned proxy %s to device %s", maskProxyURL(proxyURL), id)
+		}
+	}
+
 	m.devices[id] = instance
 
 	if m.storage != nil {
@@ -221,6 +232,7 @@ func (m *DeviceManager) CreateDevice(ctx context.Context, requestedID string) (*
 			DeviceID:    id,
 			DisplayName: instance.DisplayName(),
 			JID:         instance.JID(),
+			ProxyURL:    instance.ProxyURL(),
 			CreatedAt:   instance.CreatedAt(),
 			UpdatedAt:   instance.CreatedAt(),
 		}); err != nil {
@@ -400,6 +412,7 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 		instance.SetState(domainDevice.DeviceStateDisconnected)
 		instance.displayName = rec.DisplayName
 		instance.jid = rec.JID
+		instance.proxyURL = rec.ProxyURL
 
 		// If we had an existing device with client, transfer the client
 		if existingByJID != nil {
@@ -471,6 +484,12 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	client := whatsmeow.NewClient(storeDevice, newFilteredLogger(baseLogger))
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
+
+	// Apply proxy if assigned to this device
+	if proxyURL := inst.ProxyURL(); proxyURL != "" {
+		client.SetProxyAddress(proxyURL)
+		logrus.Infof("[DEVICE_MANAGER] applying proxy %s to device %s", maskProxyURL(proxyURL), deviceID)
+	}
 
 	repo := inst.GetChatStorage()
 	if repo == nil {
@@ -591,6 +610,25 @@ func configureDeviceProps() {
 	osName := fmt.Sprintf("%s %s", config.AppOs, config.AppVersion)
 	store.DeviceProps.PlatformType = &config.AppPlatform
 	store.DeviceProps.Os = &osName
+}
+
+// getDeviceProxyCountsLocked returns a map of proxy URL -> number of devices using it.
+// MUST be called while holding m.mu (at least RLock).
+func (m *DeviceManager) getDeviceProxyCountsLocked() map[string]int {
+	counts := make(map[string]int)
+	for _, inst := range m.devices {
+		if p := inst.ProxyURL(); p != "" {
+			counts[p]++
+		}
+	}
+	return counts
+}
+
+// GetDeviceProxyCounts returns a map of proxy URL -> number of devices using it (thread-safe).
+func (m *DeviceManager) GetDeviceProxyCounts() map[string]int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.getDeviceProxyCountsLocked()
 }
 
 // StoreInfo returns configured store URIs for observability.

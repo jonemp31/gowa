@@ -150,6 +150,9 @@ func initEnvConfig() {
 	if envVersion := viper.GetString("whatsapp_version"); envVersion != "" {
 		config.WhatsappVersion = envVersion
 	}
+	if envProxies := viper.GetString("whatsapp_proxies"); envProxies != "" {
+		config.WhatsappProxies = strings.Split(envProxies, ",")
+	}
 
 	// Chatwoot settings
 	if viper.IsSet("chatwoot_enabled") {
@@ -387,6 +390,9 @@ func initApp() {
 
 	chatStorageRepo = chatstorage.NewStorageRepository(chatStorageDB)
 	chatStorageRepo.InitializeSchema()
+
+	// Initialize proxy pool (must be before device loading)
+	whatsapp.InitProxyManager()
 
 	whatsappDB := whatsapp.InitWaDB(ctx, config.DBURI)
 	var keysDB *sqlstore.Container

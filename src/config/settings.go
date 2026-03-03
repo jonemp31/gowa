@@ -44,7 +44,8 @@ var (
 	WhatsappTypeLid                            = "@lid"
 	WhatsappAccountValidation                  = true
 	WhatsappPresenceOnConnect                  = "unavailable" // Presence to send on connect: "available", "unavailable", or "none"
-	WhatsappVersion                            = ""             // WhatsApp Web version override (e.g. "2.3000.1034187832"). Empty = use whatsmeow default.
+	WhatsappVersion                            = ""            // WhatsApp Web version override (e.g. "2.3000.1034187832"). Empty = use whatsmeow default.
+	WhatsappProxies                   []string                 // Pool of proxy URLs for per-device connections (e.g. socks5://user:pass@host:port)
 
 	ChatStorageURI               = "file:storages/chatstorage.db"
 	ChatStorageEnableForeignKeys = true

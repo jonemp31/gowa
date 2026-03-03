@@ -19,6 +19,7 @@ type DeviceInstance struct {
 	displayName     string
 	phoneNumber     string
 	jid             string
+	proxyURL        string
 	createdAt       time.Time
 	onLoggedOut     func(deviceID string) // Callback for remote logout cleanup
 }
@@ -90,6 +91,20 @@ func (d *DeviceInstance) JID() string {
 
 func (d *DeviceInstance) CreatedAt() time.Time {
 	return d.createdAt
+}
+
+// ProxyURL returns the proxy URL assigned to this device.
+func (d *DeviceInstance) ProxyURL() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.proxyURL
+}
+
+// SetProxyURL assigns a proxy URL to this device.
+func (d *DeviceInstance) SetProxyURL(url string) {
+	d.mu.Lock()
+	d.proxyURL = url
+	d.mu.Unlock()
 }
 
 // SetClient attaches a WhatsApp client to this instance and updates metadata.
