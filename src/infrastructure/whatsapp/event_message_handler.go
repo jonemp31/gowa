@@ -3,6 +3,7 @@ package whatsapp
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -76,6 +77,36 @@ func handleImageMessage(ctx context.Context, evt *events.Message, client *whatsm
 	}
 }
 
+// getMarkReadDelay returns a random delay based on the current hour (America/Sao_Paulo).
+// Simulates human reading behavior: faster during active hours, slower at night.
+func getMarkReadDelay() time.Duration {
+	hour := time.Now().Hour() // TZ=America/Sao_Paulo set in container
+	var minSec, maxSec int
+	switch {
+	case hour >= 8 && hour < 11: // 08:01–11:00
+		minSec, maxSec = 6, 18
+	case hour >= 11 && hour < 13: // 11:01–13:00
+		minSec, maxSec = 18, 36
+	case hour >= 13 && hour < 18: // 13:01–18:00
+		minSec, maxSec = 8, 24
+	case hour >= 18 && hour < 19: // 18:01–19:00
+		minSec, maxSec = 20, 40
+	case hour >= 19 && hour <= 23: // 19:01–00:00
+		minSec, maxSec = 7, 18
+	case hour == 0: // 00:01–01:00
+		minSec, maxSec = 7, 18
+	case hour >= 1 && hour < 2: // 00:01–02:00
+		minSec, maxSec = 18, 48
+	case hour >= 2 && hour < 6: // 02:01–06:00
+		minSec, maxSec = 37, 90
+	case hour >= 6 && hour < 8: // 06:01–08:00
+		minSec, maxSec = 15, 30
+	default:
+		minSec, maxSec = 6, 18
+	}
+	return time.Duration(minSec+rand.Intn(maxSec-minSec+1)) * time.Second
+}
+
 func handleAutoMarkRead(ctx context.Context, evt *events.Message, client *whatsmeow.Client) {
 	// Only mark read if auto-mark read is enabled and message is incoming
 	if !config.WhatsappAutoMarkRead || evt.Info.IsFromMe {
@@ -86,17 +117,24 @@ func handleAutoMarkRead(ctx context.Context, evt *events.Message, client *whatsm
 		return
 	}
 
-	// Mark the message as read
+	// Capture values for the goroutine
 	messageIDs := []types.MessageID{evt.Info.ID}
-	timestamp := time.Now()
 	chat := evt.Info.Chat
 	sender := evt.Info.Sender
 
-	if err := client.MarkRead(ctx, messageIDs, timestamp, chat, sender); err != nil {
-		log.Warnf("Failed to mark message %s as read: %v", evt.Info.ID, err)
-	} else {
-		log.Debugf("Marked message %s as read", evt.Info.ID)
-	}
+	// Mark as read after a random human-like delay (async, non-blocking)
+	go func() {
+		delay := getMarkReadDelay()
+		log.Debugf("Will mark message %s as read in %v", evt.Info.ID, delay)
+		time.Sleep(delay)
+		markCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.MarkRead(markCtx, messageIDs, time.Now(), chat, sender); err != nil {
+			log.Warnf("Failed to mark message %s as read: %v", evt.Info.ID, err)
+		} else {
+			log.Debugf("Marked message %s as read after %v delay", evt.Info.ID, delay)
+		}
+	}()
 }
 
 func handleWebhookForward(ctx context.Context, evt *events.Message, client *whatsmeow.Client) {
