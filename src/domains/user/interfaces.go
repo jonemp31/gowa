@@ -16,6 +16,7 @@ type IUserProfile interface {
 	Avatar(ctx context.Context, request AvatarRequest) (response AvatarResponse, err error)
 	ChangeAvatar(ctx context.Context, request ChangeAvatarRequest) (err error)
 	ChangePushName(ctx context.Context, request ChangePushNameRequest) (err error)
+	SetStatusMessage(ctx context.Context, request SetStatusMessageRequest) (err error)
 }
 
 // IUserContact handles contact management operations
@@ -33,6 +34,13 @@ type IUserListing interface {
 // IUserPrivacy handles user privacy operations
 type IUserPrivacy interface {
 	MyPrivacySetting(ctx context.Context) (response MyPrivacySettingResponse, err error)
+	SetPrivacySetting(ctx context.Context, request SetPrivacySettingRequest) (response MyPrivacySettingResponse, err error)
+}
+
+// IUserPresence handles presence subscription operations
+type IUserPresence interface {
+	SubscribePresence(ctx context.Context, request SubscribePresenceRequest) (response SubscribePresenceResponse, err error)
+	SetForceActiveDeliveryReceipts(ctx context.Context, request SetForceActiveDeliveryReceiptsRequest) (err error)
 }
 
 // IUserUsecase combines all user interfaces for backward compatibility
@@ -42,4 +50,5 @@ type IUserUsecase interface {
 	IUserListing
 	IUserPrivacy
 	IUserContact
+	IUserPresence
 }

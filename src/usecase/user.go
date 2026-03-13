@@ -217,10 +217,93 @@ func (service serviceUser) MyPrivacySetting(ctx context.Context) (response domai
 	}
 
 	response.GroupAdd = string(resp.GroupAdd)
+	response.LastSeen = string(resp.LastSeen)
 	response.Status = string(resp.Status)
 	response.ReadReceipts = string(resp.ReadReceipts)
 	response.Profile = string(resp.Profile)
+	response.Online = string(resp.Online)
+	response.CallAdd = string(resp.CallAdd)
 	return response, nil
+}
+
+func (service serviceUser) SetPrivacySetting(ctx context.Context, request domainUser.SetPrivacySettingRequest) (response domainUser.MyPrivacySettingResponse, err error) {
+	err = validations.ValidateSetPrivacySetting(ctx, request)
+	if err != nil {
+		return response, err
+	}
+
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return response, pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	updated, err := client.SetPrivacySetting(ctx, types.PrivacySettingType(request.Name), types.PrivacySetting(request.Value))
+	if err != nil {
+		return response, err
+	}
+
+	response.GroupAdd = string(updated.GroupAdd)
+	response.LastSeen = string(updated.LastSeen)
+	response.Status = string(updated.Status)
+	response.ReadReceipts = string(updated.ReadReceipts)
+	response.Profile = string(updated.Profile)
+	response.Online = string(updated.Online)
+	response.CallAdd = string(updated.CallAdd)
+	return response, nil
+}
+
+func (service serviceUser) SetStatusMessage(ctx context.Context, request domainUser.SetStatusMessageRequest) (err error) {
+	err = validations.ValidateSetStatusMessage(ctx, request)
+	if err != nil {
+		return err
+	}
+
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	return client.SetStatusMessage(ctx, request.Message)
+}
+
+func (service serviceUser) SubscribePresence(ctx context.Context, request domainUser.SubscribePresenceRequest) (response domainUser.SubscribePresenceResponse, err error) {
+	err = validations.ValidateSubscribePresence(ctx, request)
+	if err != nil {
+		return response, err
+	}
+
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return response, pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	dataWaRecipient, err := utils.ValidateJidWithLogin(client, request.Phone)
+	if err != nil {
+		return response, err
+	}
+
+	err = client.SubscribePresence(ctx, dataWaRecipient)
+	if err != nil {
+		return response, err
+	}
+
+	response.Subscribed = true
+	response.Phone = dataWaRecipient.String()
+	return response, nil
+}
+
+func (service serviceUser) SetForceActiveDeliveryReceipts(ctx context.Context, request domainUser.SetForceActiveDeliveryReceiptsRequest) (err error) {
+	client := whatsapp.ClientFromContext(ctx)
+	if client == nil {
+		return pkgError.ErrWaCLI
+	}
+	utils.MustLogin(client)
+
+	client.SetForceActiveDeliveryReceipts(request.Active)
+	return nil
 }
 
 func (service serviceUser) MyListContacts(ctx context.Context) (response domainUser.MyListContactsResponse, err error) {

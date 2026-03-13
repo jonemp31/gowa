@@ -61,7 +61,7 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 	case *events.Receipt:
 		handleReceipt(ctx, evt, instance.JID(), client)
 	case *events.Presence:
-		handlePresence(ctx, evt)
+		handlePresence(ctx, evt, instance.JID())
 	case *events.HistorySync:
 		handleHistorySync(ctx, evt, chatStorageRepo, client)
 	case *events.AppState:
@@ -293,7 +293,7 @@ func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, cl
 	}
 }
 
-func handlePresence(_ context.Context, evt *events.Presence) {
+func handlePresence(_ context.Context, evt *events.Presence, deviceID string) {
 	if evt.Unavailable {
 		if evt.LastSeen.IsZero() {
 			log.Infof("%s is now offline", evt.From)
@@ -302,6 +302,23 @@ func handlePresence(_ context.Context, evt *events.Presence) {
 		}
 	} else {
 		log.Infof("%s is now online", evt.From)
+	}
+
+	// Forward presence events to webhook
+	if len(config.WhatsappWebhook) > 0 {
+		payload := map[string]any{
+			"event": "presence",
+			"payload": map[string]any{
+				"device_id":   deviceID,
+				"from":        evt.From.String(),
+				"unavailable": evt.Unavailable,
+				"timestamp":   time.Now().Unix(),
+			},
+		}
+		if !evt.LastSeen.IsZero() {
+			payload["payload"].(map[string]any)["last_seen"] = evt.LastSeen.Unix()
+		}
+		ForwardConnectionEvent(payload, "presence")
 	}
 }
 

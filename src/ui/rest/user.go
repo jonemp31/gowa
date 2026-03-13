@@ -24,6 +24,10 @@ func InitRestUser(app fiber.Router, service domainUser.IUserUsecase) User {
 	app.Get("/user/check", rest.UserCheck)
 	app.Get("/user/business-profile", rest.UserBusinessProfile)
 	app.Post("/user/contact", rest.UserSaveContact)
+	app.Post("/user/status-message", rest.UserSetStatusMessage)
+	app.Put("/user/my/privacy", rest.UserSetPrivacySetting)
+	app.Post("/user/subscribe-presence", rest.UserSubscribePresence)
+	app.Post("/user/force-delivery-receipts", rest.UserSetForceDeliveryReceipts)
 
 	return rest
 }
@@ -224,4 +228,76 @@ func getDeviceFromCtx(c *fiber.Ctx) *whatsapp.DeviceInstance {
 		return device
 	}
 	return nil
+}
+
+func (controller *User) UserSetStatusMessage(c *fiber.Ctx) error {
+	var request domainUser.SetStatusMessageRequest
+	err := c.BodyParser(&request)
+	utils.PanicIfNeeded(err)
+
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+
+	err = controller.Service.SetStatusMessage(ctx, request)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success set status message",
+	})
+}
+
+func (controller *User) UserSetPrivacySetting(c *fiber.Ctx) error {
+	var request domainUser.SetPrivacySettingRequest
+	err := c.BodyParser(&request)
+	utils.PanicIfNeeded(err)
+
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+
+	response, err := controller.Service.SetPrivacySetting(ctx, request)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success set privacy setting",
+		Results: response,
+	})
+}
+
+func (controller *User) UserSubscribePresence(c *fiber.Ctx) error {
+	var request domainUser.SubscribePresenceRequest
+	err := c.BodyParser(&request)
+	utils.PanicIfNeeded(err)
+
+	utils.SanitizePhone(&request.Phone)
+
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+
+	response, err := controller.Service.SubscribePresence(ctx, request)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success subscribe presence",
+		Results: response,
+	})
+}
+
+func (controller *User) UserSetForceDeliveryReceipts(c *fiber.Ctx) error {
+	var request domainUser.SetForceActiveDeliveryReceiptsRequest
+	err := c.BodyParser(&request)
+	utils.PanicIfNeeded(err)
+
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+
+	err = controller.Service.SetForceActiveDeliveryReceipts(ctx, request)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Success set force delivery receipts",
+	})
 }

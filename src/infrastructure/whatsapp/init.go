@@ -123,6 +123,7 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 	devicePropsMu.Unlock()
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
+	client.SetForceActiveDeliveryReceipts(true)
 
 	deviceRepo := newDeviceChatStorage(instanceID, chatStorageRepo)
 	instance := NewDeviceInstance(instanceID, client, deviceRepo)

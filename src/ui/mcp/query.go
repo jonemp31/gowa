@@ -35,6 +35,10 @@ func (h *QueryHandler) AddQueryTools(mcpServer *server.MCPServer) {
 	mcpServer.AddTool(h.toolGetChatMessages(), h.handleGetChatMessages)
 	mcpServer.AddTool(h.toolDownloadMedia(), h.handleDownloadMedia)
 	mcpServer.AddTool(h.toolArchiveChat(), h.handleArchiveChat)
+	mcpServer.AddTool(h.toolSetStatusMessage(), h.handleSetStatusMessage)
+	mcpServer.AddTool(h.toolSetPrivacySetting(), h.handleSetPrivacySetting)
+	mcpServer.AddTool(h.toolSubscribePresence(), h.handleSubscribePresence)
+	mcpServer.AddTool(h.toolSetForceDeliveryReceipts(), h.handleSetForceDeliveryReceipts)
 }
 
 func (h *QueryHandler) toolListContacts() mcp.Tool {
@@ -365,4 +369,177 @@ func (h *QueryHandler) handleArchiveChat(ctx context.Context, request mcp.CallTo
 
 	fallback := resp.Message
 	return mcp.NewToolResultStructured(resp, fallback), nil
+}
+
+// ── SetStatusMessage ──────────────────────────────────────────────────
+
+func (h *QueryHandler) toolSetStatusMessage() mcp.Tool {
+	return mcp.NewTool(
+		"whatsapp_set_status_message",
+		mcp.WithDescription("Change the WhatsApp 'About' status text of the connected account."),
+		mcp.WithTitleAnnotation("Set Status Message"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithString("message",
+			mcp.Description("The new status/about text (max 139 characters)."),
+			mcp.Required(),
+		),
+	)
+}
+
+func (h *QueryHandler) handleSetStatusMessage(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx, err := mcpHelpers.ContextWithDefaultDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	message, err := request.RequireString("message")
+	if err != nil {
+		return nil, err
+	}
+
+	req := domainUser.SetStatusMessageRequest{Message: message}
+	err = h.userService.SetStatusMessage(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return mcp.NewToolResultText("Status message updated successfully"), nil
+}
+
+// ── SetPrivacySetting ─────────────────────────────────────────────────
+
+func (h *QueryHandler) toolSetPrivacySetting() mcp.Tool {
+	return mcp.NewTool(
+		"whatsapp_set_privacy",
+		mcp.WithDescription("Change a WhatsApp privacy setting. Name options: groupadd, last, status, profile, readreceipts, online, calladd. Value options: all, contacts, contact_blacklist, none, match_last_seen."),
+		mcp.WithTitleAnnotation("Set Privacy Setting"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithString("name",
+			mcp.Description("Privacy setting name: groupadd, last, status, profile, readreceipts, online, calladd."),
+			mcp.Required(),
+		),
+		mcp.WithString("value",
+			mcp.Description("Privacy setting value: all, contacts, contact_blacklist, none, match_last_seen."),
+			mcp.Required(),
+		),
+	)
+}
+
+func (h *QueryHandler) handleSetPrivacySetting(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx, err := mcpHelpers.ContextWithDefaultDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	name, err := request.RequireString("name")
+	if err != nil {
+		return nil, err
+	}
+	value, err := request.RequireString("value")
+	if err != nil {
+		return nil, err
+	}
+
+	req := domainUser.SetPrivacySettingRequest{Name: name, Value: value}
+	resp, err := h.userService.SetPrivacySetting(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return mcp.NewToolResultStructured(resp, "Privacy setting updated"), nil
+}
+
+// ── SubscribePresence ─────────────────────────────────────────────────
+
+func (h *QueryHandler) toolSubscribePresence() mcp.Tool {
+	return mcp.NewTool(
+		"whatsapp_subscribe_presence",
+		mcp.WithDescription("Subscribe to a contact's online/offline presence updates. After subscribing, presence events will be forwarded to the configured webhook."),
+		mcp.WithTitleAnnotation("Subscribe Presence"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithString("phone",
+			mcp.Description("The phone number or JID to subscribe to."),
+			mcp.Required(),
+		),
+	)
+}
+
+func (h *QueryHandler) handleSubscribePresence(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx, err := mcpHelpers.ContextWithDefaultDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	phone, err := request.RequireString("phone")
+	if err != nil {
+		return nil, err
+	}
+
+	utils.SanitizePhone(&phone)
+
+	req := domainUser.SubscribePresenceRequest{Phone: phone}
+	resp, err := h.userService.SubscribePresence(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	fallback := fmt.Sprintf("Subscribed to presence of %s", resp.Phone)
+	return mcp.NewToolResultStructured(resp, fallback), nil
+}
+
+// ── SetForceDeliveryReceipts ──────────────────────────────────────────
+
+func (h *QueryHandler) toolSetForceDeliveryReceipts() mcp.Tool {
+	return mcp.NewTool(
+		"whatsapp_set_force_delivery_receipts",
+		mcp.WithDescription("Toggle forced active delivery receipts. When active, the client sends visible delivery receipts (double gray ticks) even when not marked as online."),
+		mcp.WithTitleAnnotation("Set Force Delivery Receipts"),
+		mcp.WithReadOnlyHintAnnotation(false),
+		mcp.WithDestructiveHintAnnotation(false),
+		mcp.WithIdempotentHintAnnotation(true),
+		mcp.WithBoolean("active",
+			mcp.Description("Set to true to force active delivery receipts, false to disable."),
+			mcp.Required(),
+		),
+	)
+}
+
+func (h *QueryHandler) handleSetForceDeliveryReceipts(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	ctx, err := mcpHelpers.ContextWithDefaultDevice(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	args := request.GetArguments()
+	if args == nil {
+		return nil, fmt.Errorf("missing required argument: active")
+	}
+
+	activeValue, ok := args["active"]
+	if !ok {
+		return nil, fmt.Errorf("missing required argument: active")
+	}
+
+	active, err := toBool(activeValue)
+	if err != nil {
+		return nil, err
+	}
+
+	req := domainUser.SetForceActiveDeliveryReceiptsRequest{Active: active}
+	err = h.userService.SetForceActiveDeliveryReceipts(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	status := "disabled"
+	if active {
+		status = "enabled"
+	}
+	return mcp.NewToolResultText(fmt.Sprintf("Force delivery receipts %s", status)), nil
 }

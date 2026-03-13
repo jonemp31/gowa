@@ -527,6 +527,7 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	devicePropsMu.Unlock()
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
+	client.SetForceActiveDeliveryReceipts(true)
 
 	// Apply proxy if assigned to this device
 	if proxyURL := inst.ProxyURL(); proxyURL != "" {

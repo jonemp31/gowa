@@ -49,6 +49,8 @@ type MyPrivacySettingResponse struct {
 	Status       string `json:"status"`
 	Profile      string `json:"profile"`
 	ReadReceipts string `json:"read_receipts"`
+	Online       string `json:"online"`
+	CallAdd      string `json:"call_add"`
 }
 
 type MyListGroupsResponse struct {
@@ -120,4 +122,30 @@ type BusinessProfileResponse struct {
 	ProfileOptions        map[string]string            `json:"profile_options"`
 	BusinessHoursTimeZone string                       `json:"business_hours_timezone"`
 	BusinessHours         []BusinessProfileHoursConfig `json:"business_hours"`
+}
+
+// SetStatusMessage changes the user's "About" text.
+type SetStatusMessageRequest struct {
+	Message string `json:"message" form:"message"`
+}
+
+// SetPrivacySetting changes a specific privacy setting.
+type SetPrivacySettingRequest struct {
+	Name  string `json:"name" form:"name"`
+	Value string `json:"value" form:"value"`
+}
+
+// SubscribePresence subscribes to a contact's online/offline events.
+type SubscribePresenceRequest struct {
+	Phone string `json:"phone" form:"phone"`
+}
+
+type SubscribePresenceResponse struct {
+	Subscribed bool   `json:"subscribed"`
+	Phone      string `json:"phone"`
+}
+
+// SetForceActiveDeliveryReceipts toggles forced active delivery receipts.
+type SetForceActiveDeliveryReceiptsRequest struct {
+	Active bool `json:"active" form:"active"`
 }
