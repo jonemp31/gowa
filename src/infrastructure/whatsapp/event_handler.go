@@ -3,7 +3,6 @@ package whatsapp
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -56,7 +55,7 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 	case *events.PushNameSetting:
 		handleConnectionEvents(ctx, client, instance)
 	case *events.StreamReplaced:
-		handleStreamReplaced(ctx)
+		handleStreamReplaced(ctx, instance)
 	case *events.Message:
 		handleMessage(ctx, evt, chatStorageRepo, client)
 	case *events.Receipt:
@@ -241,19 +240,31 @@ func handleConnectionEvents(_ context.Context, client *whatsmeow.Client, instanc
 	sendConfiguredPresence(context.Background(), client)
 }
 
-func handleStreamReplaced(_ context.Context) {
+func handleStreamReplaced(_ context.Context, instance *DeviceInstance) {
+	deviceID := instance.ID()
+	logrus.Warnf("[STREAM_REPLACED] Device %s - another client connected with same session", deviceID)
+
+	if client := instance.GetClient(); client != nil {
+		client.Disconnect()
+	}
+	instance.SetState(domainDevice.DeviceStateDisconnected)
+
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "STREAM_REPLACED",
+		Message: fmt.Sprintf("Device %s disconnected - another client took over the session", deviceID),
+		Result:  map[string]string{"device_id": deviceID},
+	}
+
 	if len(config.WhatsappWebhook) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = forwardPayloadToConfiguredWebhooks(ctx, map[string]any{
+		ForwardConnectionEvent(map[string]any{
 			"event": "stream_replaced",
 			"payload": map[string]any{
+				"device_id": deviceID,
 				"reason":    "another_client_connected",
 				"timestamp": time.Now().Unix(),
 			},
 		}, "stream_replaced")
-		cancel()
 	}
-	os.Exit(0)
 }
 
 func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, client *whatsmeow.Client) {
