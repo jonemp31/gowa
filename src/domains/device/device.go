@@ -20,5 +20,6 @@ type Device struct {
 	DisplayName string      `json:"display_name,omitempty"`
 	State       DeviceState `json:"state"`
 	JID         string      `json:"jid,omitempty"`
+	ProxyURL    string      `json:"proxy_url,omitempty"`
 	CreatedAt   time.Time   `json:"created_at"`
 }

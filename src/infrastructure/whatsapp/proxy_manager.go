@@ -348,3 +348,14 @@ func maskProxyURL(rawURL string) string {
 	}
 	return parsed.String()
 }
+
+// CheckProxyURL tests connectivity of an arbitrary proxy URL.
+// This is safe to call without a ProxyManager instance.
+func CheckProxyURL(proxyURL string) bool {
+	return checkProxy(proxyURL)
+}
+
+// MaskProxyURL redacts credentials from a proxy URL for safe logging/responses.
+func MaskProxyURL(rawURL string) string {
+	return maskProxyURL(rawURL)
+}

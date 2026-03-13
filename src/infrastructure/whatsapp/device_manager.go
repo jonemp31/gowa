@@ -643,6 +643,70 @@ func (m *DeviceManager) StoreInfo() (dbURI, keysURI string) {
 	return config.DBURI, config.DBKeysURI
 }
 
+// SetDeviceProxy updates the proxy for a specific device, persists it, and reconnects
+// the client through the new proxy if one is active. Pass "" to remove the proxy.
+func (m *DeviceManager) SetDeviceProxy(deviceID string, proxyURL string) error {
+	if m == nil {
+		return fmt.Errorf("device manager not initialized")
+	}
+
+	inst, ok := m.GetDevice(deviceID)
+	if !ok || inst == nil {
+		return fmt.Errorf("device %s not found", deviceID)
+	}
+
+	oldProxy := inst.ProxyURL()
+	inst.SetProxyURL(proxyURL)
+
+	// Persist to DB
+	if m.storage != nil {
+		if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+			DeviceID:    inst.ID(),
+			DisplayName: inst.DisplayName(),
+			JID:         inst.JID(),
+			ProxyURL:    proxyURL,
+			UpdatedAt:   time.Now(),
+		}); err != nil {
+			// Rollback in-memory change on DB failure
+			inst.SetProxyURL(oldProxy)
+			return fmt.Errorf("failed to persist proxy: %w", err)
+		}
+	}
+
+	// If client exists, disconnect and reconnect with the new proxy
+	cli := inst.GetClient()
+	if cli != nil {
+		cli.Disconnect()
+
+		if proxyURL != "" {
+			if err := cli.SetProxyAddress(proxyURL); err != nil {
+				logrus.Errorf("[DEVICE_MANAGER] failed to apply proxy %s to device %s: %v", maskProxyURL(proxyURL), deviceID, err)
+				return fmt.Errorf("failed to apply proxy to client: %w", err)
+			}
+		} else {
+			// Remove proxy — reset transport to default
+			cli.SetProxy(nil)
+		}
+
+		// Only reconnect if the client was logged in (has a session)
+		if cli.Store != nil && cli.Store.ID != nil {
+			if err := cli.Connect(); err != nil {
+				logrus.Errorf("[DEVICE_MANAGER] failed to reconnect device %s after proxy change: %v", deviceID, err)
+				return fmt.Errorf("proxy set but reconnect failed: %w", err)
+			}
+			inst.UpdateStateFromClient()
+		}
+	}
+
+	if proxyURL != "" {
+		logrus.Infof("[DEVICE_MANAGER] proxy set for device %s: %s", deviceID, maskProxyURL(proxyURL))
+	} else {
+		logrus.Infof("[DEVICE_MANAGER] proxy removed for device %s", deviceID)
+	}
+
+	return nil
+}
+
 // MigrateDevicesFromProxy moves all devices using the given (dead) proxy to a healthy replacement.
 // It disconnects the old client, sets the new proxy, and reconnects.
 func (m *DeviceManager) MigrateDevicesFromProxy(downProxyURL string) {

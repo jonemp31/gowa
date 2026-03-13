@@ -124,6 +124,7 @@ func restServer(_ *cobra.Command, _ []string) {
 
 	// Device management routes (no device_id required)
 	rest.InitRestDevice(apiGroup, deviceUsecase)
+	rest.InitRestProxy(apiGroup, deviceUsecase)
 
 	// Device-scoped operations (header-based)
 	headerDeviceGroup := apiGroup.Group("", middleware.DeviceMiddleware(dm))

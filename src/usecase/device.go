@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
@@ -145,6 +146,52 @@ func (s *serviceDevice) GetStatus(_ context.Context, deviceID string) (bool, boo
 	return false, false, fmt.Errorf("device %s not found", deviceID)
 }
 
+func (s *serviceDevice) SetDeviceProxy(_ context.Context, deviceID string, proxyType string, host string, port int, username string, password string) error {
+	if s.manager == nil {
+		return fmt.Errorf("device manager not initialized")
+	}
+
+	// Build proxy URL from components
+	var userInfo *url.Userinfo
+	if username != "" {
+		if password != "" {
+			userInfo = url.UserPassword(username, password)
+		} else {
+			userInfo = url.User(username)
+		}
+	}
+
+	proxyURL := &url.URL{
+		Scheme: proxyType,
+		Host:   fmt.Sprintf("%s:%d", host, port),
+		User:   userInfo,
+	}
+
+	return s.manager.SetDeviceProxy(deviceID, proxyURL.String())
+}
+
+func (s *serviceDevice) RemoveDeviceProxy(_ context.Context, deviceID string) error {
+	if s.manager == nil {
+		return fmt.Errorf("device manager not initialized")
+	}
+	return s.manager.SetDeviceProxy(deviceID, "")
+}
+
+func (s *serviceDevice) TestDeviceProxy(_ context.Context, deviceID string) (bool, error) {
+	if s.manager == nil {
+		return false, fmt.Errorf("device manager not initialized")
+	}
+	inst, ok := s.manager.GetDevice(deviceID)
+	if !ok || inst == nil {
+		return false, fmt.Errorf("device %s not found", deviceID)
+	}
+	proxyURL := inst.ProxyURL()
+	if proxyURL == "" {
+		return false, fmt.Errorf("device %s has no proxy configured", deviceID)
+	}
+	return whatsapp.CheckProxyURL(proxyURL), nil
+}
+
 func convertInstance(inst *whatsapp.DeviceInstance) domainDevice.Device {
 	if inst == nil {
 		return domainDevice.Device{}
@@ -158,6 +205,7 @@ func convertInstance(inst *whatsapp.DeviceInstance) domainDevice.Device {
 		DisplayName: inst.DisplayName(),
 		State:       state,
 		JID:         inst.JID(),
+		ProxyURL:    whatsapp.MaskProxyURL(inst.ProxyURL()),
 		CreatedAt:   inst.CreatedAt(),
 	}
 }
