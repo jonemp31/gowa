@@ -20,6 +20,7 @@ type DeviceInstance struct {
 	phoneNumber     string
 	jid             string
 	proxyURL        string
+	fingerprint     string
 	createdAt       time.Time
 	onLoggedOut     func(deviceID string) // Callback for remote logout cleanup
 }
@@ -98,6 +99,20 @@ func (d *DeviceInstance) ProxyURL() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.proxyURL
+}
+
+// Fingerprint returns the device fingerprint string ("platformType|os").
+func (d *DeviceInstance) Fingerprint() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.fingerprint
+}
+
+// SetFingerprint assigns a fingerprint to this device.
+func (d *DeviceInstance) SetFingerprint(fp string) {
+	d.mu.Lock()
+	d.fingerprint = fp
+	d.mu.Unlock()
 }
 
 // SetProxyURL assigns a proxy URL to this device.

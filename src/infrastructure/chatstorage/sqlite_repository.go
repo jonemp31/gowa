@@ -591,9 +591,9 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 
 	// Try update first, then insert if no rows affected (cross-db compatible)
 	result, err := r.db.Exec(`
-		UPDATE devices SET display_name = ?, jid = ?, proxy_url = ?, updated_at = ?
+		UPDATE devices SET display_name = ?, jid = ?, proxy_url = ?, fingerprint = ?, updated_at = ?
 		WHERE device_id = ?
-	`, record.DisplayName, record.JID, record.ProxyURL, record.UpdatedAt, record.DeviceID)
+	`, record.DisplayName, record.JID, record.ProxyURL, record.Fingerprint, record.UpdatedAt, record.DeviceID)
 	if err != nil {
 		return err
 	}
@@ -601,9 +601,9 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		_, err = r.db.Exec(`
-			INSERT INTO devices (device_id, display_name, jid, proxy_url, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, record.DeviceID, record.DisplayName, record.JID, record.ProxyURL, record.CreatedAt, record.UpdatedAt)
+			INSERT INTO devices (device_id, display_name, jid, proxy_url, fingerprint, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, record.DeviceID, record.DisplayName, record.JID, record.ProxyURL, record.Fingerprint, record.CreatedAt, record.UpdatedAt)
 	}
 	return err
 }
@@ -611,7 +611,7 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 // ListDeviceRecords returns all registered devices.
 func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecord, error) {
 	rows, err := r.db.Query(`
-		SELECT device_id, display_name, jid, COALESCE(proxy_url, ''), created_at, updated_at
+		SELECT device_id, display_name, jid, COALESCE(proxy_url, ''), COALESCE(fingerprint, ''), created_at, updated_at
 		FROM devices
 		ORDER BY created_at ASC
 	`)
@@ -623,7 +623,7 @@ func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecor
 	var records []*domainChatStorage.DeviceRecord
 	for rows.Next() {
 		var rec domainChatStorage.DeviceRecord
-		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.Fingerprint, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, &rec)
@@ -640,11 +640,11 @@ func (r *SQLiteRepository) GetDeviceRecord(deviceID string) (*domainChatStorage.
 
 	rec := &domainChatStorage.DeviceRecord{}
 	err := r.db.QueryRow(`
-		SELECT device_id, display_name, jid, COALESCE(proxy_url, ''), created_at, updated_at
+		SELECT device_id, display_name, jid, COALESCE(proxy_url, ''), COALESCE(fingerprint, ''), created_at, updated_at
 		FROM devices
 		WHERE device_id = ?
 		LIMIT 1
-	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.CreatedAt, &rec.UpdatedAt)
+	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.Fingerprint, &rec.CreatedAt, &rec.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1104,5 +1104,8 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 13: Add proxy_url column to devices table
 		`ALTER TABLE devices ADD COLUMN proxy_url TEXT DEFAULT ''`,
+
+		// Migration 14: Add fingerprint column to devices table
+		`ALTER TABLE devices ADD COLUMN fingerprint TEXT DEFAULT ''`,
 	}
 }

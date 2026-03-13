@@ -57,6 +57,7 @@ func (m *DeviceManager) AddDevice(instance *DeviceInstance) {
 			DisplayName: instance.DisplayName(),
 			JID:         instance.JID(),
 			ProxyURL:    instance.ProxyURL(),
+			Fingerprint: instance.Fingerprint(),
 			CreatedAt:   instance.CreatedAt(),
 			UpdatedAt:   time.Now(),
 		})
@@ -233,6 +234,7 @@ func (m *DeviceManager) CreateDevice(ctx context.Context, requestedID string) (*
 			DisplayName: instance.DisplayName(),
 			JID:         instance.JID(),
 			ProxyURL:    instance.ProxyURL(),
+			Fingerprint: instance.Fingerprint(),
 			CreatedAt:   instance.CreatedAt(),
 			UpdatedAt:   instance.CreatedAt(),
 		}); err != nil {
@@ -330,9 +332,10 @@ func (m *DeviceManager) LoadExistingDevices(ctx context.Context) error {
 			orphanDevice.mu.Unlock()
 			if m.storage != nil {
 				_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
-					DeviceID: orphanDevice.ID(),
-					JID:      jid,
-					ProxyURL: orphanDevice.ProxyURL(),
+					DeviceID:    orphanDevice.ID(),
+					JID:         jid,
+					ProxyURL:    orphanDevice.ProxyURL(),
+					Fingerprint: orphanDevice.Fingerprint(),
 				})
 			}
 			continue
@@ -414,6 +417,7 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 		instance.displayName = rec.DisplayName
 		instance.jid = rec.JID
 		instance.proxyURL = rec.ProxyURL
+		instance.fingerprint = rec.Fingerprint
 
 		// If we had an existing device with client, transfer the client
 		if existingByJID != nil {
@@ -475,14 +479,52 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 		return nil, err
 	}
 
-	configureDeviceProps()
+	// Assign a fingerprint if the device doesn't have one yet
+	if inst.Fingerprint() == "" {
+		fp := RandomFingerprint()
+		inst.SetFingerprint(fp.String())
+		logrus.Infof("[DEVICE_MANAGER] assigned fingerprint %s/%s to device %s",
+			fp.PlatformType, fp.Os, deviceID)
+		// Persist immediately so the fingerprint survives restarts
+		if m.storage != nil {
+			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				DeviceID:    inst.ID(),
+				DisplayName: inst.DisplayName(),
+				JID:         inst.JID(),
+				ProxyURL:    inst.ProxyURL(),
+				Fingerprint: inst.Fingerprint(),
+				UpdatedAt:   time.Now(),
+			})
+		}
+	}
 
 	if err := m.configureKeysStore(ctx, storeDevice); err != nil {
 		return nil, fmt.Errorf("failed to configure keys store: %w", err)
 	}
 
+	// Apply the device fingerprint to the global DeviceProps and create the client
+	// atomically under the mutex to prevent races between concurrent EnsureClient calls.
+	fp, ok := ParseFingerprint(inst.Fingerprint())
+	if !ok {
+		// Corrupted or empty fingerprint — reassign and persist
+		fp = RandomFingerprint()
+		inst.SetFingerprint(fp.String())
+		if m.storage != nil {
+			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				DeviceID:    inst.ID(),
+				DisplayName: inst.DisplayName(),
+				JID:         inst.JID(),
+				ProxyURL:    inst.ProxyURL(),
+				Fingerprint: inst.Fingerprint(),
+				UpdatedAt:   time.Now(),
+			})
+		}
+	}
+	devicePropsMu.Lock()
+	applyFingerprintLocked(fp)
 	baseLogger := waLog.Stdout(fmt.Sprintf("Client-%s", deviceID), config.WhatsappLogLevel, true)
 	client := whatsmeow.NewClient(storeDevice, newFilteredLogger(baseLogger))
+	devicePropsMu.Unlock()
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
 
@@ -610,12 +652,6 @@ func (m *DeviceManager) configureKeysStore(ctx context.Context, device *store.De
 	return nil
 }
 
-func configureDeviceProps() {
-	osName := fmt.Sprintf("%s %s", config.AppOs, config.AppVersion)
-	store.DeviceProps.PlatformType = &config.AppPlatform
-	store.DeviceProps.Os = &osName
-}
-
 // getDeviceProxyCountsLocked returns a map of proxy URL -> number of devices using it.
 // MUST be called while holding m.mu (at least RLock).
 func (m *DeviceManager) getDeviceProxyCountsLocked() map[string]int {
@@ -665,6 +701,7 @@ func (m *DeviceManager) SetDeviceProxy(deviceID string, proxyURL string) error {
 			DisplayName: inst.DisplayName(),
 			JID:         inst.JID(),
 			ProxyURL:    proxyURL,
+			Fingerprint: inst.Fingerprint(),
 			UpdatedAt:   time.Now(),
 		}); err != nil {
 			// Rollback in-memory change on DB failure
@@ -757,6 +794,7 @@ func (m *DeviceManager) MigrateDevicesFromProxy(downProxyURL string) {
 				DisplayName: inst.DisplayName(),
 				JID:         inst.JID(),
 				ProxyURL:    newProxy,
+				Fingerprint: inst.Fingerprint(),
 			})
 		}
 

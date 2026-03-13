@@ -2,14 +2,12 @@ package whatsapp
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	"go.mau.fi/whatsmeow"
-	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -74,10 +72,26 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 		panic("No device found")
 	}
 
-	// Configure device properties
-	osName := fmt.Sprintf("%s %s", config.AppOs, config.AppVersion)
-	store.DeviceProps.PlatformType = &config.AppPlatform
-	store.DeviceProps.Os = &osName
+	// Resolve fingerprint — try loading persisted one from DB, else assign a random one
+	var fp DeviceFingerprint
+	nonADJID := ""
+	if device.ID != nil {
+		nonADJID = device.ID.ToNonAD().String()
+	}
+	if chatStorageRepo != nil && nonADJID != "" {
+		records, _ := chatStorageRepo.ListDeviceRecords()
+		for _, rec := range records {
+			if rec.JID == nonADJID && rec.Fingerprint != "" {
+				if parsed, ok := ParseFingerprint(rec.Fingerprint); ok {
+					fp = parsed
+					break
+				}
+			}
+		}
+	}
+	if fp.Os == "" {
+		fp = RandomFingerprint()
+	}
 
 	// Keep references for global state update after client creation
 	primaryDB := storeContainer
@@ -101,14 +115,18 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 		instanceID = device.ID.String()
 	}
 
-	// Create and configure the client with filtered logging to avoid noisy reconnection EOF errors
+	// Create and configure the client under the fingerprint mutex to prevent races
+	devicePropsMu.Lock()
+	applyFingerprintLocked(fp)
 	baseLogger := waLog.Stdout("Client", config.WhatsappLogLevel, true)
 	client := whatsmeow.NewClient(device, newFilteredLogger(baseLogger))
+	devicePropsMu.Unlock()
 	client.EnableAutoReconnect = true
 	client.AutoTrustIdentity = true
 
 	deviceRepo := newDeviceChatStorage(instanceID, chatStorageRepo)
 	instance := NewDeviceInstance(instanceID, client, deviceRepo)
+	instance.SetFingerprint(fp.String())
 
 	client.AddEventHandler(func(rawEvt interface{}) {
 		handler(ctx, instance, rawEvt)

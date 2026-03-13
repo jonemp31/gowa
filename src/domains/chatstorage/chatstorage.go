@@ -52,6 +52,7 @@ type DeviceRecord struct {
 	DisplayName string    `db:"display_name"`
 	JID         string    `db:"jid"`
 	ProxyURL    string    `db:"proxy_url"`
+	Fingerprint string    `db:"fingerprint"`
 	CreatedAt   time.Time `db:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"`
 }
