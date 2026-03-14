@@ -15,5 +15,5 @@ type IDeviceUsecase interface {
 	GetStatus(ctx context.Context, deviceID string) (isConnected bool, isLoggedIn bool, err error)
 	SetDeviceProxy(ctx context.Context, deviceID string, proxyType string, host string, port int, username string, password string) error
 	RemoveDeviceProxy(ctx context.Context, deviceID string) error
-	TestDeviceProxy(ctx context.Context, deviceID string) (healthy bool, err error)
+	TestDeviceProxy(ctx context.Context, deviceID string) (healthy bool, externalIP string, err error)
 }

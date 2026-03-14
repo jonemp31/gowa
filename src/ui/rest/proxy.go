@@ -95,7 +95,7 @@ func (handler *Proxy) TestProxy(c *fiber.Ctx) error {
 		utils.PanicIfNeeded(err)
 	}
 
-	healthy, err := handler.Service.TestDeviceProxy(c.UserContext(), deviceID)
+	healthy, externalIP, err := handler.Service.TestDeviceProxy(c.UserContext(), deviceID)
 	utils.PanicIfNeeded(err)
 
 	// Get masked proxy URL for safe display
@@ -109,9 +109,10 @@ func (handler *Proxy) TestProxy(c *fiber.Ctx) error {
 		Code:    "SUCCESS",
 		Message: "Proxy test completed",
 		Results: map[string]any{
-			"device_id": deviceID,
-			"proxy":     maskedProxy,
-			"healthy":   healthy,
+			"device_id":   deviceID,
+			"proxy":       maskedProxy,
+			"healthy":     healthy,
+			"external_ip": externalIP,
 		},
 	})
 }

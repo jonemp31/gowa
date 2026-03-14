@@ -3,7 +3,9 @@ package whatsapp
 import (
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -353,6 +355,46 @@ func maskProxyURL(rawURL string) string {
 // This is safe to call without a ProxyManager instance.
 func CheckProxyURL(proxyURL string) bool {
 	return checkProxy(proxyURL)
+}
+
+// CheckProxyIP tests connectivity and returns the external IP seen through the proxy.
+// Returns empty string if the proxy is unreachable.
+func CheckProxyIP(proxyURL string) (string, bool) {
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return "", false
+	}
+
+	var transport *http.Transport
+	switch parsed.Scheme {
+	case "socks5", "socks5h":
+		var auth *proxy.Auth
+		if parsed.User != nil {
+			pass, _ := parsed.User.Password()
+			auth = &proxy.Auth{User: parsed.User.Username(), Password: pass}
+		}
+		dialer, err := proxy.SOCKS5("tcp", parsed.Host, auth, &net.Dialer{Timeout: 5 * time.Second})
+		if err != nil {
+			return "", false
+		}
+		transport = &http.Transport{Dial: dialer.Dial}
+	case "http", "https":
+		transport = &http.Transport{Proxy: http.ProxyURL(parsed)}
+	default:
+		return "", false
+	}
+
+	client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+
+	body := make([]byte, 64)
+	n, _ := resp.Body.Read(body)
+	ip := strings.TrimSpace(string(body[:n]))
+	return ip, ip != ""
 }
 
 // MaskProxyURL redacts credentials from a proxy URL for safe logging/responses.

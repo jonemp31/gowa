@@ -177,19 +177,20 @@ func (s *serviceDevice) RemoveDeviceProxy(_ context.Context, deviceID string) er
 	return s.manager.SetDeviceProxy(deviceID, "")
 }
 
-func (s *serviceDevice) TestDeviceProxy(_ context.Context, deviceID string) (bool, error) {
+func (s *serviceDevice) TestDeviceProxy(_ context.Context, deviceID string) (bool, string, error) {
 	if s.manager == nil {
-		return false, fmt.Errorf("device manager not initialized")
+		return false, "", fmt.Errorf("device manager not initialized")
 	}
 	inst, ok := s.manager.GetDevice(deviceID)
 	if !ok || inst == nil {
-		return false, fmt.Errorf("device %s not found", deviceID)
+		return false, "", fmt.Errorf("device %s not found", deviceID)
 	}
 	proxyURL := inst.ProxyURL()
 	if proxyURL == "" {
-		return false, fmt.Errorf("device %s has no proxy configured", deviceID)
+		return false, "", fmt.Errorf("device %s has no proxy configured", deviceID)
 	}
-	return whatsapp.CheckProxyURL(proxyURL), nil
+	ip, healthy := whatsapp.CheckProxyIP(proxyURL)
+	return healthy, ip, nil
 }
 
 func convertInstance(inst *whatsapp.DeviceInstance) domainDevice.Device {
