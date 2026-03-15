@@ -7,11 +7,14 @@
 set -e
 
 # ───── Self-download guard (evita problemas de pipe) ─────
-if [ -p /dev/stdin ] || [ ! -t 0 ]; then
-    SELF_PATH="/tmp/install-gowa.sh"
-    curl -sL "https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh" -o "$SELF_PATH"
-    chmod +x "$SELF_PATH"
-    exec bash "$SELF_PATH" "$@"
+_SCRIPT_RUNNING_FROM_FILE="${_GOWA_FROM_FILE:-}"
+if [ -z "$_SCRIPT_RUNNING_FROM_FILE" ]; then
+    if [ -p /dev/stdin ]; then
+        SELF_PATH="$HOME/install-gowa.sh"
+        curl -sL "https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh" -o "$SELF_PATH"
+        chmod +x "$SELF_PATH"
+        _GOWA_FROM_FILE=1 exec bash "$SELF_PATH" "$@"
+    fi
 fi
 
 # ───── Colors ─────
