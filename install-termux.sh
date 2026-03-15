@@ -3,6 +3,15 @@
 # GOWA Auto-Installer for Termux
 # Installs, configures, and runs GOWA WhatsApp API on Android
 # ═══════════════════════════════════════════════════════════════
+
+# If piped (curl | bash), download to file and re-exec so reads work
+if [ ! -t 0 ]; then
+    TMPSCRIPT="$HOME/.gowa-install.sh"
+    curl -sL "https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh" -o "$TMPSCRIPT"
+    chmod +x "$TMPSCRIPT"
+    exec bash "$TMPSCRIPT" "$@"
+fi
+
 set -e
 
 # ───── Colors ─────
@@ -43,7 +52,7 @@ log_step "Configuração"
 # Question 1: Cell ID
 while true; do
     echo -e "${BOLD}Qual é esse celular? (ex: cel1, cel2, cel3):${NC} "
-    read -r CEL_ID </dev/tty
+    read -r CEL_ID
     if [[ "$CEL_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
         break
     fi
@@ -58,11 +67,11 @@ DEFAULT_WEBHOOK="https://webhook-dev.zapsafe.work/webhook/gowa-mobo"
 echo -e "${BOLD}Manter webhook padrão?${NC}"
 echo -e "  ${CYAN}${DEFAULT_WEBHOOK}?cel=${CEL_NUM}${NC}"
 echo -e "${BOLD}[y/n]:${NC} "
-read -r KEEP_WEBHOOK </dev/tty
+read -r KEEP_WEBHOOK
 
 if [[ "$KEEP_WEBHOOK" =~ ^[nN] ]]; then
     echo -e "${BOLD}Digite a URL da webhook (sem ?cel=):${NC} "
-    read -r CUSTOM_WEBHOOK </dev/tty
+    read -r CUSTOM_WEBHOOK
     WEBHOOK_URL="${CUSTOM_WEBHOOK}?cel=${CEL_NUM}"
 else
     WEBHOOK_URL="${DEFAULT_WEBHOOK}?cel=${CEL_NUM}"
@@ -77,7 +86,7 @@ echo -e "  Tunnel:   ${CYAN}${CEL_ID}.autopilots.trade${NC}"
 echo -e "  API:      ${CYAN}http://localhost:3000${NC}"
 echo ""
 echo -e "${BOLD}Confirma instalação? [y/n]:${NC} "
-read -r CONFIRM </dev/tty
+read -r CONFIRM
 if [[ ! "$CONFIRM" =~ ^[yYsS] ]]; then
     log_warn "Instalação cancelada."
     exit 0
