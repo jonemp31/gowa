@@ -4,15 +4,15 @@
 # Installs, configures, and runs GOWA WhatsApp API on Android
 # ═══════════════════════════════════════════════════════════════
 
-# If piped (curl | bash), download to file and re-exec so reads work
-if [ ! -t 0 ]; then
-    TMPSCRIPT="$HOME/.gowa-install.sh"
-    curl -sL "https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh" -o "$TMPSCRIPT"
-    chmod +x "$TMPSCRIPT"
-    exec bash "$TMPSCRIPT" "$@"
-fi
-
 set -e
+
+# ───── Self-download guard (evita problemas de pipe) ─────
+if [ -p /dev/stdin ] || [ ! -t 0 ]; then
+    SELF_PATH="/tmp/install-gowa.sh"
+    curl -sL "https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh" -o "$SELF_PATH"
+    chmod +x "$SELF_PATH"
+    exec bash "$SELF_PATH" "$@"
+fi
 
 # ───── Colors ─────
 RED='\033[0;31m'
@@ -52,7 +52,12 @@ log_step "Configuração"
 # Question 1: Cell ID
 while true; do
     echo -e "${BOLD}Qual é esse celular? (ex: cel1, cel2, cel3):${NC} "
-    read -r CEL_ID
+    read -r CEL_ID </dev/tty
+    # Guard contra EOF/input vazio no pipe
+    if [ -z "$CEL_ID" ]; then
+        log_error "Nenhum input recebido. Execute: curl -sL https://raw.githubusercontent.com/jonemp31/gowa/main/install-termux.sh -o /tmp/install-gowa.sh && bash /tmp/install-gowa.sh"
+        exit 1
+    fi
     if [[ "$CEL_ID" =~ ^[a-zA-Z0-9_-]+$ ]]; then
         break
     fi
@@ -67,11 +72,11 @@ DEFAULT_WEBHOOK="https://webhook-dev.zapsafe.work/webhook/gowa-mobo"
 echo -e "${BOLD}Manter webhook padrão?${NC}"
 echo -e "  ${CYAN}${DEFAULT_WEBHOOK}?cel=${CEL_NUM}${NC}"
 echo -e "${BOLD}[y/n]:${NC} "
-read -r KEEP_WEBHOOK
+read -r KEEP_WEBHOOK </dev/tty
 
 if [[ "$KEEP_WEBHOOK" =~ ^[nN] ]]; then
     echo -e "${BOLD}Digite a URL da webhook (sem ?cel=):${NC} "
-    read -r CUSTOM_WEBHOOK
+    read -r CUSTOM_WEBHOOK </dev/tty
     WEBHOOK_URL="${CUSTOM_WEBHOOK}?cel=${CEL_NUM}"
 else
     WEBHOOK_URL="${DEFAULT_WEBHOOK}?cel=${CEL_NUM}"
@@ -86,7 +91,7 @@ echo -e "  Tunnel:   ${CYAN}${CEL_ID}.autopilots.trade${NC}"
 echo -e "  API:      ${CYAN}http://localhost:3000${NC}"
 echo ""
 echo -e "${BOLD}Confirma instalação? [y/n]:${NC} "
-read -r CONFIRM
+read -r CONFIRM </dev/tty
 if [[ ! "$CONFIRM" =~ ^[yYsS] ]]; then
     log_warn "Instalação cancelada."
     exit 0
