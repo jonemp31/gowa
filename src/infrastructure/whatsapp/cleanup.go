@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
@@ -192,6 +193,102 @@ func CleanupTemporaryFiles() error {
 	}
 
 	return nil
+}
+
+// CleanupOldMedia removes downloaded media files older than MediaRetentionDays.
+// It cleans both statics/media/ (HTTP-served downloads) and storages/ media files.
+// Uses the date from folder names (YYYY-MM-DD) when available for efficiency.
+func CleanupOldMedia() {
+	if config.MediaRetentionDays <= 0 {
+		return
+	}
+
+	cutoff := time.Now().AddDate(0, 0, -config.MediaRetentionDays)
+	cutoffDate := cutoff.Format("2006-01-02")
+	var removedFiles, removedDirs int
+
+	// Clean statics/media/{phone}/{date}/ structure
+	mediaRoot := config.PathMedia
+	if _, err := os.Stat(mediaRoot); err == nil {
+		phoneDirs, err := os.ReadDir(mediaRoot)
+		if err != nil {
+			logrus.Warnf("[MEDIA-CLEANUP] Error reading media directory %s: %v", mediaRoot, err)
+		}
+		for _, phoneDir := range phoneDirs {
+			if !phoneDir.IsDir() {
+				continue
+			}
+			phonePath := filepath.Join(mediaRoot, phoneDir.Name())
+			dateDirs, err := os.ReadDir(phonePath)
+			if err != nil {
+				logrus.Warnf("[MEDIA-CLEANUP] Error reading phone directory %s: %v", phonePath, err)
+				continue
+			}
+			for _, dateDir := range dateDirs {
+				if !dateDir.IsDir() {
+					continue
+				}
+				// Validate date folder format before comparing
+				if _, err := time.Parse("2006-01-02", dateDir.Name()); err != nil {
+					continue
+				}
+				// Compare date folder name (lexicographic works for YYYY-MM-DD)
+				if dateDir.Name() < cutoffDate {
+					datePath := filepath.Join(phonePath, dateDir.Name())
+					if err := os.RemoveAll(datePath); err != nil {
+						logrus.Warnf("[MEDIA-CLEANUP] Error removing date directory %s: %v", datePath, err)
+					} else {
+						removedDirs++
+					}
+				}
+			}
+			// Remove phone directory if empty
+			remaining, _ := os.ReadDir(phonePath)
+			if len(remaining) == 0 {
+				os.Remove(phonePath)
+			}
+		}
+	}
+
+	// Clean storages/ media files by modification time
+	storagesRoot := config.PathStorages
+	mediaExtensions := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true, ".webp": true,
+		".mp4": true, ".avi": true, ".mkv": true, ".mov": true,
+		".mp3": true, ".ogg": true, ".opus": true, ".m4a": true, ".wav": true,
+		".pdf": true, ".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
+	}
+	if _, err := os.Stat(storagesRoot); err == nil {
+		filepath.WalkDir(storagesRoot, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				return nil
+			}
+			// Skip symlinks to prevent traversal outside storages/
+			if d.Type()&os.ModeSymlink != 0 {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(d.Name()))
+			if mediaExtensions[ext] && info.ModTime().Before(cutoff) {
+				if err := os.Remove(path); err != nil {
+					logrus.Warnf("[MEDIA-CLEANUP] Error removing file %s: %v", path, err)
+				} else {
+					removedFiles++
+				}
+			}
+			return nil
+		})
+	}
+
+	if removedFiles > 0 || removedDirs > 0 {
+		logrus.Infof("[MEDIA-CLEANUP] Removed %d files and %d directories older than %d days", removedFiles, removedDirs, config.MediaRetentionDays)
+	}
 }
 
 // ReinitializeWhatsAppComponents reinitializes database and client components

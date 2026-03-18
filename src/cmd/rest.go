@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
@@ -155,6 +156,19 @@ func restServer(_ *cobra.Command, _ []string) {
 
 	// Set auto reconnect checking with a guaranteed client instance
 	startAutoReconnectCheckerIfClientAvailable()
+
+	// Start media cleanup goroutine if retention is configured
+	if config.MediaRetentionDays > 0 {
+		go func() {
+			logrus.Infof("[MEDIA-CLEANUP] Media retention enabled: %d days, checking every 6 hours", config.MediaRetentionDays)
+			whatsapp.CleanupOldMedia()
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				whatsapp.CleanupOldMedia()
+			}
+		}()
+	}
 
 	if err := app.Listen(config.AppHost + ":" + config.AppPort); err != nil {
 		logrus.Fatalln("Failed to start: ", err.Error())
