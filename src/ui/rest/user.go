@@ -77,8 +77,10 @@ func (controller *User) UserChangeAvatar(c *fiber.Ctx) error {
 	err := c.BodyParser(&request)
 	utils.PanicIfNeeded(err)
 
-	request.Avatar, err = c.FormFile("avatar")
-	utils.PanicIfNeeded(err)
+	file, err := c.FormFile("avatar")
+	if err == nil {
+		request.Avatar = file
+	}
 
 	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
 

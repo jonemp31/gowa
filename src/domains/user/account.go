@@ -62,7 +62,8 @@ type MyListNewsletterResponse struct {
 }
 
 type ChangeAvatarRequest struct {
-	Avatar *multipart.FileHeader `json:"avatar" form:"avatar"`
+	Avatar    *multipart.FileHeader `json:"avatar" form:"avatar"`
+	AvatarURL *string               `json:"avatar_url" form:"avatar_url"`
 }
 
 type MyListContactsResponse struct {

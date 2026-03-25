@@ -335,45 +335,56 @@ func (service serviceUser) ChangeAvatar(ctx context.Context, request domainUser.
 	}
 	utils.MustLogin(client)
 
-	file, err := request.Avatar.Open()
-	if err != nil {
-		return err
-	}
-	defer file.Close()
+	var srcImage image.Image
 
-	// Read original image
-	srcImage, err := imaging.Decode(file)
-	if err != nil {
-		return fmt.Errorf("failed to decode image: %v", err)
+	if request.AvatarURL != nil && *request.AvatarURL != "" {
+		// Download image from URL (priority over file upload)
+		imageData, _, err := utils.DownloadImageFromURL(*request.AvatarURL)
+		if err != nil {
+			return fmt.Errorf("failed to download avatar from URL: %v", err)
+		}
+		srcImage, err = imaging.Decode(bytes.NewReader(imageData))
+		if err != nil {
+			return fmt.Errorf("failed to decode image: %v", err)
+		}
+	} else if request.Avatar != nil {
+		// Use uploaded file
+		file, err := request.Avatar.Open()
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		srcImage, err = imaging.Decode(file)
+		if err != nil {
+			return fmt.Errorf("failed to decode image: %v", err)
+		}
+	} else {
+		return fmt.Errorf("avatar file or avatar_url is required")
 	}
 
-	// Get original dimensions
+	// Proportional resize + center crop to 640x640
+	// Step 1: Resize proportionally so the shortest side becomes 640
+	// Step 2: Center crop to exactly 640x640
+	// This preserves aspect ratio — no distortion, no stretching
 	bounds := srcImage.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
 
-	// Calculate new dimensions for 1:1 aspect ratio
-	size := width
-	if height < width {
-		size = height
-	}
-	if size > 640 {
-		size = 640
-	}
-
-	// Create a square crop from the center
-	left := (width - size) / 2
-	top := (height - size) / 2
-	croppedImage := imaging.Crop(srcImage, image.Rect(left, top, left+size, top+size))
-
-	// Resize if needed
-	if size > 640 {
-		croppedImage = imaging.Resize(croppedImage, 640, 640, imaging.Lanczos)
+	var resized image.Image
+	if width <= height {
+		// Portrait or square: width is the short side, resize it to 640
+		resized = imaging.Resize(srcImage, 640, 0, imaging.Lanczos)
+	} else {
+		// Landscape: height is the short side, resize it to 640
+		resized = imaging.Resize(srcImage, 0, 640, imaging.Lanczos)
 	}
 
-	// Convert to bytes
+	// Center crop to 640x640
+	finalImage := imaging.CropCenter(resized, 640, 640)
+
+	// Encode to JPEG
 	var buf bytes.Buffer
-	err = imaging.Encode(&buf, croppedImage, imaging.JPEG, imaging.JPEGQuality(80))
+	err = imaging.Encode(&buf, finalImage, imaging.JPEG, imaging.JPEGQuality(80))
 	if err != nil {
 		return fmt.Errorf("failed to encode image: %v", err)
 	}
