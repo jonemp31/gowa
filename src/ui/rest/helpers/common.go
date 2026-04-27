@@ -124,11 +124,14 @@ func scheduleDevicePresences(service domainApp.IAppUsecase, device domainApp.Dev
 	if eveningAt.After(now) {
 		time.Sleep(time.Until(eveningAt))
 		ctx := context.Background()
-		if err := service.SendDevicePresence(ctx, device.Device, "unavailable"); err != nil {
-			logrus.Warnf("[PRESENCE-SCHEDULER] evening unavailable failed for %s: %v", device.Device, err)
+		if err := service.SendDevicePresence(ctx, device.Device, "available"); err != nil {
+			logrus.Warnf("[PRESENCE-SCHEDULER] evening available failed for %s: %v", device.Device, err)
 		} else {
-			logrus.Infof("[PRESENCE-SCHEDULER] sent evening unavailable for %s", device.Device)
+			logrus.Infof("[PRESENCE-SCHEDULER] sent evening available for %s", device.Device)
 		}
+		// Brief online window then go offline for the night
+		time.Sleep(time.Duration(45+rand.Intn(46)) * time.Second)
+		_ = service.SendDevicePresence(ctx, device.Device, "unavailable")
 	}
 }
 
