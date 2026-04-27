@@ -96,3 +96,13 @@ func ValidateSubscribePresence(ctx context.Context, request domainUser.Subscribe
 	}
 	return nil
 }
+
+func ValidateChangePushName(ctx context.Context, request domainUser.ChangePushNameRequest) error {
+	err := validation.ValidateStructWithContext(ctx, &request,
+		validation.Field(&request.PushName, validation.Required, validation.Length(1, 25)),
+	)
+	if err != nil {
+		return pkgError.ValidationError(err.Error())
+	}
+	return nil
+}

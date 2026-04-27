@@ -398,6 +398,10 @@ func (service serviceUser) ChangeAvatar(ctx context.Context, request domainUser.
 }
 
 func (service serviceUser) ChangePushName(ctx context.Context, request domainUser.ChangePushNameRequest) (err error) {
+	if err = validations.ValidateChangePushName(ctx, request); err != nil {
+		return err
+	}
+
 	client := whatsapp.ClientFromContext(ctx)
 	if client == nil {
 		return pkgError.ErrWaCLI

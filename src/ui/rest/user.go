@@ -156,13 +156,15 @@ func (controller *User) UserChangePushName(c *fiber.Ctx) error {
 	err := c.BodyParser(&request)
 	utils.PanicIfNeeded(err)
 
-	err = controller.Service.ChangePushName(c.UserContext(), request)
+	ctx := whatsapp.ContextWithDevice(c.UserContext(), getDeviceFromCtx(c))
+	err = controller.Service.ChangePushName(ctx, request)
 	utils.PanicIfNeeded(err)
 
 	return c.JSON(utils.ResponseData{
 		Status:  200,
 		Code:    "SUCCESS",
 		Message: "Success change push name",
+		Results: map[string]any{"push_name": request.PushName},
 	})
 }
 
