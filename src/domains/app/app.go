@@ -13,6 +13,7 @@ type IAppUsecase interface {
 	Status(ctx context.Context, deviceID string) (isConnected bool, isLoggedIn bool, err error)
 	FirstDevice(ctx context.Context) (response DevicesResponse, err error)
 	FetchDevices(ctx context.Context) (response []DevicesResponse, err error)
+	SendDevicePresence(ctx context.Context, deviceID string, presence string) error
 }
 
 type DevicesResponse struct {

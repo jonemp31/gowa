@@ -13,6 +13,7 @@ import (
 	pkgError "github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/error"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/validations"
+	"github.com/sirupsen/logrus"
 	"github.com/disintegration/imaging"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
@@ -412,6 +413,18 @@ func (service serviceUser) ChangePushName(ctx context.Context, request domainUse
 	if err != nil {
 		return err
 	}
+
+	// Update local store immediately so SendPresence carries the new name
+	// without waiting for the server echo of the app state patch.
+	client.Store.PushName = request.PushName
+	if saveErr := client.Store.Save(ctx); saveErr != nil {
+		logrus.Warnf("[PUSHNAME] failed to persist new push name locally: %v", saveErr)
+	}
+	// Broadcast new name to contacts with active presence subscription.
+	// available signals the name change; unavailable restores offline state.
+	_ = client.SendPresence(ctx, types.PresenceAvailable)
+	_ = client.SendPresence(ctx, types.PresenceUnavailable)
+
 	return nil
 }
 

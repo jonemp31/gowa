@@ -20,6 +20,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/libsignal/logger"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/types"
 )
 
 type serviceApp struct {
@@ -279,6 +280,17 @@ func (service *serviceApp) FetchDevices(_ context.Context) (response []domainApp
 	}
 
 	return response, nil
+}
+
+func (service *serviceApp) SendDevicePresence(ctx context.Context, deviceID string, presence string) error {
+	_, client, err := service.ensureClient(ctx, deviceID)
+	if err != nil {
+		return err
+	}
+	if client.Store == nil || client.Store.ID == nil {
+		return fmt.Errorf("device %s is not logged in", deviceID)
+	}
+	return client.SendPresence(ctx, types.Presence(presence))
 }
 
 func (service *serviceApp) ensureClient(ctx context.Context, deviceID string) (*whatsapp.DeviceInstance, *whatsmeow.Client, error) {

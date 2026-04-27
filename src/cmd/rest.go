@@ -157,6 +157,9 @@ func restServer(_ *cobra.Command, _ []string) {
 	// Set auto reconnect checking with a guaranteed client instance
 	startAutoReconnectCheckerIfClientAvailable()
 
+	// Daily presence scheduler: randomised available/unavailable signals per device
+	go helpers.SetDailyPresenceScheduler(appUsecase)
+
 	// Start media cleanup goroutine if retention is configured
 	if config.MediaRetentionDays > 0 {
 		go func() {
