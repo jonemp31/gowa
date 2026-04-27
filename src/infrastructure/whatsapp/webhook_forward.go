@@ -80,6 +80,10 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		}
 	}
 
+	if config.WhatsappApiName != "" {
+		payload["api_name"] = config.WhatsappApiName
+	}
+
 	err := forwardToWebhooks(ctx, payload, eventName)
 
 	if eventName == "message" && config.ChatwootEnabled {

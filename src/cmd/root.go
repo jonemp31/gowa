@@ -141,6 +141,9 @@ func initEnvConfig() {
 		events := strings.Split(envWebhookEvents, ",")
 		config.WhatsappWebhookEvents = events
 	}
+	if envApiName := viper.GetString("whatsapp_api_name"); envApiName != "" {
+		config.WhatsappApiName = envApiName
+	}
 	if viper.IsSet("whatsapp_account_validation") {
 		config.WhatsappAccountValidation = viper.GetBool("whatsapp_account_validation")
 	}
@@ -294,6 +297,12 @@ func initFlags() {
 		"webhook-events", "",
 		config.WhatsappWebhookEvents,
 		`whitelist of events to forward to webhook (empty = all events) --webhook-events <string> | example: --webhook-events="message,message.ack,group.participants"`,
+	)
+	rootCmd.PersistentFlags().StringVarP(
+		&config.WhatsappApiName,
+		"api-name", "",
+		config.WhatsappApiName,
+		`human-readable identifier injected into every webhook payload as "api_name" --api-name <string> | example: --api-name="gowa-prod-01"`,
 	)
 	rootCmd.PersistentFlags().BoolVarP(
 		&config.WhatsappAccountValidation,
