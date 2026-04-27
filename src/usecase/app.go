@@ -209,7 +209,16 @@ func (service *serviceApp) Reconnect(_ context.Context, deviceID string) (err er
 	}
 
 	client.Disconnect()
-	err = client.Connect()
+	type connectResult struct{ err error }
+	ch := make(chan connectResult, 1)
+	go func() { ch <- connectResult{client.Connect()} }()
+	select {
+	case res := <-ch:
+		err = res.err
+	case <-time.After(15 * time.Second):
+		client.Disconnect()
+		err = fmt.Errorf("connect timeout after 15s")
+	}
 	instance.UpdateStateFromClient()
 	if err != nil {
 		logrus.Errorf("[RECONNECT][%s] Reconnect failed: %v", deviceID, err)
