@@ -67,7 +67,16 @@ func init() {
 	// Load environment variables first
 	utils.LoadConfig(".")
 
-	time.Local = time.UTC
+	if tz := os.Getenv("TZ"); tz != "" {
+		if loc, err := time.LoadLocation(tz); err == nil {
+			time.Local = loc
+		} else {
+			logrus.Warnf("Invalid TZ=%q: %v — falling back to UTC", tz, err)
+			time.Local = time.UTC
+		}
+	} else {
+		time.Local = time.UTC
+	}
 
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
