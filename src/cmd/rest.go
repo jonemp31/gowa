@@ -69,9 +69,10 @@ func restServer(_ *cobra.Command, _ []string) {
 	app.Use(middleware.Recovery())
 	app.Use(middleware.RequestTimeout(middleware.DefaultRequestTimeout))
 	app.Use(middleware.BasicAuth())
-	if config.AppDebug {
-		app.Use(logger.New())
-	}
+	app.Use(logger.New(logger.Config{
+		Format:     "${time} [HTTP]  ${method} ${path} | ${status} | ${latency}\n",
+		TimeFormat: "2006-01-02 15:04:05",
+	}))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins: "*",
 		AllowHeaders: "Origin, Content-Type, Accept",

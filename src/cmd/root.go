@@ -67,6 +67,13 @@ func init() {
 	// Load environment variables first
 	utils.LoadConfig(".")
 
+	logrus.SetFormatter(&logrus.TextFormatter{
+		ForceColors:     true,
+		FullTimestamp:   true,
+		TimestampFormat: "2006-01-02 15:04:05",
+		PadLevelText:    true,
+	})
+
 	if tz := os.Getenv("TZ"); tz != "" {
 		if loc, err := time.LoadLocation(tz); err == nil {
 			time.Local = loc
