@@ -99,3 +99,14 @@ type ArchiveChatResponse struct {
 	ChatJID  string `json:"chat_jid"`
 	Archived bool   `json:"archived"`
 }
+
+// Delete Chat operations
+type DeleteChatRequest struct {
+	ChatJID string `json:"chat_jid" uri:"chat_jid"`
+}
+
+type DeleteChatResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	ChatJID string `json:"chat_jid"`
+}

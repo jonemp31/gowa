@@ -317,6 +317,30 @@ func (service serviceChat) SetDisappearingTimer(ctx context.Context, request dom
 	return response, nil
 }
 
+func (service serviceChat) DeleteChat(ctx context.Context, request domainChat.DeleteChatRequest) (response domainChat.DeleteChatResponse, err error) {
+	if err = validations.ValidateDeleteChat(ctx, &request); err != nil {
+		return response, err
+	}
+
+	deviceID := deviceIDFromContext(ctx)
+	if deviceID == "" {
+		return response, fmt.Errorf("device identification required")
+	}
+
+	if err = service.chatStorageRepo.DeleteChatByDevice(deviceID, request.ChatJID); err != nil {
+		logrus.WithError(err).WithField("chat_jid", request.ChatJID).Error("Failed to delete chat")
+		return response, err
+	}
+
+	response.Status = "success"
+	response.Message = "Chat deleted successfully"
+	response.ChatJID = request.ChatJID
+
+	logrus.WithField("chat_jid", request.ChatJID).Info("Chat deleted successfully")
+
+	return response, nil
+}
+
 func (service serviceChat) ArchiveChat(ctx context.Context, request domainChat.ArchiveChatRequest) (response domainChat.ArchiveChatResponse, err error) {
 	if err = validations.ValidateArchiveChat(ctx, &request); err != nil {
 		return response, err
