@@ -57,11 +57,30 @@ func (s *serviceDevice) AddDevice(ctx context.Context, deviceID string) (*domain
 	return &device, nil
 }
 
-func (s *serviceDevice) RemoveDevice(_ context.Context, deviceID string) error {
+func (s *serviceDevice) RemoveDevice(ctx context.Context, deviceID string) error {
 	if s.manager == nil {
 		return fmt.Errorf("device manager not initialized")
 	}
-	s.manager.RemoveDevice(deviceID)
+
+	if err := s.manager.PurgeDevice(ctx, deviceID); err != nil {
+		return err
+	}
+
+	var devices []domainDevice.Device
+	for _, inst := range s.manager.ListDevices() {
+		inst.UpdateStateFromClient()
+		devices = append(devices, convertInstance(inst))
+	}
+
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "DEVICE_REMOVED",
+		Message: fmt.Sprintf("Device %s removed", deviceID),
+		Result: map[string]any{
+			"device_id": deviceID,
+			"devices":   devices,
+		},
+	}
+
 	return nil
 }
 
