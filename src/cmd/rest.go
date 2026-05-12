@@ -78,6 +78,19 @@ func restServer(_ *cobra.Command, _ []string) {
 		AllowHeaders: "Origin, Content-Type, Accept",
 	}))
 
+	// Health check - no authentication required
+	healthPath := "/health"
+	if config.AppBasePath != "" {
+		healthPath = config.AppBasePath + healthPath
+	}
+	app.Get(healthPath, func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":    "ok",
+			"version":   config.AppVersion,
+			"timestamp": time.Now().Unix(),
+		})
+	})
+
 	// Device manager - needed for chatwoot webhook
 	dm := whatsapp.GetDeviceManager()
 

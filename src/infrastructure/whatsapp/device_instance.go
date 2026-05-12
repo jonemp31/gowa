@@ -11,10 +11,10 @@ import (
 
 // DeviceInstance bundles a WhatsApp client with device metadata and scoped storage.
 type DeviceInstance struct {
-	mu              sync.RWMutex
-	clientOnce      sync.Once // guards one-time client initialization in EnsureClient
-	clientInitErr   error     // stores error from clientOnce.Do so callers can inspect it
-	id              string
+	mu            sync.RWMutex
+	clientMu      sync.Mutex // guards client initialization; allows retry on failure
+	clientInitErr error      // last initialization error; reset on each attempt
+	id            string
 	client          *whatsmeow.Client
 	chatStorageRepo domainChatStorage.IChatStorageRepository
 	state           domainDevice.DeviceState

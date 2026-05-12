@@ -61,27 +61,7 @@ func (s *serviceDevice) RemoveDevice(ctx context.Context, deviceID string) error
 	if s.manager == nil {
 		return fmt.Errorf("device manager not initialized")
 	}
-
-	if err := s.manager.PurgeDevice(ctx, deviceID); err != nil {
-		return err
-	}
-
-	var devices []domainDevice.Device
-	for _, inst := range s.manager.ListDevices() {
-		inst.UpdateStateFromClient()
-		devices = append(devices, convertInstance(inst))
-	}
-
-	websocket.Broadcast <- websocket.BroadcastMessage{
-		Code:    "DEVICE_REMOVED",
-		Message: fmt.Sprintf("Device %s removed", deviceID),
-		Result: map[string]any{
-			"device_id": deviceID,
-			"devices":   devices,
-		},
-	}
-
-	return nil
+	return s.purgeAndBroadcast(ctx, deviceID, fmt.Sprintf("Device %s removed", deviceID))
 }
 
 func (s *serviceDevice) LoginDevice(_ context.Context, _ string) error {
@@ -96,23 +76,23 @@ func (s *serviceDevice) LogoutDevice(ctx context.Context, deviceID string) error
 	if s.manager == nil {
 		return fmt.Errorf("device manager not initialized")
 	}
+	return s.purgeAndBroadcast(ctx, deviceID, fmt.Sprintf("Device %s logged out and removed", deviceID))
+}
 
+func (s *serviceDevice) purgeAndBroadcast(ctx context.Context, deviceID, message string) error {
 	if err := s.manager.PurgeDevice(ctx, deviceID); err != nil {
 		return err
 	}
 
-	// Broadcast device removal so UI clients can refresh.
 	var devices []domainDevice.Device
-	if s.manager != nil {
-		for _, inst := range s.manager.ListDevices() {
-			inst.UpdateStateFromClient()
-			devices = append(devices, convertInstance(inst))
-		}
+	for _, inst := range s.manager.ListDevices() {
+		inst.UpdateStateFromClient()
+		devices = append(devices, convertInstance(inst))
 	}
 
 	websocket.Broadcast <- websocket.BroadcastMessage{
 		Code:    "DEVICE_REMOVED",
-		Message: fmt.Sprintf("Device %s logged out and removed", deviceID),
+		Message: message,
 		Result: map[string]any{
 			"device_id": deviceID,
 			"devices":   devices,

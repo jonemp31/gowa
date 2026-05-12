@@ -1676,6 +1676,19 @@ func (service serviceSend) SendSticker(ctx context.Context, request domainSend.S
 }
 
 func (service serviceSend) uploadMedia(ctx context.Context, client *whatsmeow.Client, mediaType whatsmeow.MediaType, media []byte, recipient types.JID) (uploaded whatsmeow.UploadResponse, err error) {
+	// Log which proxy (if any) is routing this upload so we can confirm server IP is never
+	// exposed to WhatsApp CDN when a proxy is configured.
+	if dm := whatsapp.GetDeviceManager(); dm != nil && client.Store != nil && client.Store.ID != nil {
+		jid := client.Store.ID.ToNonAD().String()
+		if inst, _, resolveErr := dm.ResolveDevice(jid); resolveErr == nil && inst != nil {
+			if proxyURL := inst.ProxyURL(); proxyURL != "" {
+				logrus.Infof("[UPLOAD] device=%s type=%s proxy=%s size=%d bytes", jid, mediaType, whatsapp.MaskProxyURL(proxyURL), len(media))
+			} else {
+				logrus.Warnf("[UPLOAD] device=%s type=%s proxy=none (direct — server IP visible to CDN)", jid, mediaType)
+			}
+		}
+	}
+
 	if recipient.Server == types.NewsletterServer {
 		uploaded, err = client.UploadNewsletter(ctx, media, mediaType)
 	} else {

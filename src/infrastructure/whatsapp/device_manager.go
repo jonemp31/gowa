@@ -469,102 +469,106 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	}
 
 	inst := m.ensureInstance(deviceID)
+
+	// Fast path: client already initialized.
 	if existing := inst.GetClient(); existing != nil {
 		inst.UpdateStateFromClient()
 		return inst, nil
 	}
 
-	// clientOnce guarantees the expensive client initialization runs exactly once,
-	// even when concurrent goroutines call EnsureClient for the same device simultaneously.
-	inst.clientOnce.Do(func() {
-		storeDevice, err := m.getOrCreateStoreDevice(ctx, deviceID)
-		if err != nil {
-			inst.clientInitErr = err
-			return
-		}
+	// Slow path: acquire init lock so concurrent callers queue up.
+	// Unlike sync.Once this allows a retry when the previous attempt failed.
+	inst.clientMu.Lock()
+	defer inst.clientMu.Unlock()
 
-		// Assign a fingerprint if the device doesn't have one yet
-		if inst.Fingerprint() == "" {
-			fp := RandomFingerprint()
-			inst.SetFingerprint(fp.String())
-			logrus.Infof("[DEVICE_MANAGER] assigned fingerprint %s/%s to device %s",
-				fp.PlatformType, fp.Os, deviceID)
-			// Persist immediately so the fingerprint survives restarts
-			if m.storage != nil {
-				_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
-					DeviceID:    inst.ID(),
-					DisplayName: inst.DisplayName(),
-					JID:         inst.JID(),
-					ProxyURL:    inst.ProxyURL(),
-					Fingerprint: inst.Fingerprint(),
-					UpdatedAt:   time.Now(),
-				})
-			}
-		}
-
-		if err := m.configureKeysStore(ctx, storeDevice); err != nil {
-			inst.clientInitErr = fmt.Errorf("failed to configure keys store: %w", err)
-			return
-		}
-
-		// Apply the device fingerprint to the global DeviceProps and create the client
-		// atomically under the mutex to prevent races between concurrent EnsureClient calls.
-		fp, ok := ParseFingerprint(inst.Fingerprint())
-		if !ok {
-			// Corrupted or empty fingerprint — reassign and persist
-			fp = RandomFingerprint()
-			inst.SetFingerprint(fp.String())
-			if m.storage != nil {
-				_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
-					DeviceID:    inst.ID(),
-					DisplayName: inst.DisplayName(),
-					JID:         inst.JID(),
-					ProxyURL:    inst.ProxyURL(),
-					Fingerprint: inst.Fingerprint(),
-					UpdatedAt:   time.Now(),
-				})
-			}
-		}
-		devicePropsMu.Lock()
-		applyFingerprintLocked(fp)
-		baseLogger := waLog.Stdout(fmt.Sprintf("Client-%s", deviceID), config.WhatsappLogLevel, true)
-		client := whatsmeow.NewClient(storeDevice, newFilteredLogger(baseLogger))
-		devicePropsMu.Unlock()
-		client.EnableAutoReconnect = true
-		client.AutoTrustIdentity = true
-		client.SetForceActiveDeliveryReceipts(true)
-
-		// Apply proxy if assigned to this device
-		if proxyURL := inst.ProxyURL(); proxyURL != "" {
-			if err := client.SetProxyAddress(proxyURL); err != nil {
-				logrus.Errorf("[DEVICE_MANAGER] failed to apply proxy %s to device %s: %v", maskProxyURL(proxyURL), deviceID, err)
-			} else {
-				logrus.Infof("[DEVICE_MANAGER] applying proxy %s to device %s", maskProxyURL(proxyURL), deviceID)
-			}
-		}
-
-		repo := inst.GetChatStorage()
-		if repo == nil {
-			repo = newDeviceChatStorage(deviceID, m.storage)
-			inst.SetChatStorage(repo)
-		}
-
-		client.AddEventHandler(func(rawEvt interface{}) {
-			handler(ctx, inst, rawEvt)
-		})
-
-		inst.SetOnLoggedOut(func(deviceID string) {
-			m.RemoveDevice(deviceID)
-		})
-
-		inst.SetClient(client)
+	// Double-check after acquiring lock.
+	if existing := inst.GetClient(); existing != nil {
 		inst.UpdateStateFromClient()
-	})
+		return inst, nil
+	}
 
-	if inst.clientInitErr != nil {
+	// Reset previous error so each locked attempt is a fresh try.
+	inst.clientInitErr = nil
+
+	storeDevice, err := m.getOrCreateStoreDevice(ctx, deviceID)
+	if err != nil {
+		inst.clientInitErr = err
+		return nil, err
+	}
+
+	// Assign a fingerprint if the device doesn't have one yet
+	if inst.Fingerprint() == "" {
+		fp := RandomFingerprint()
+		inst.SetFingerprint(fp.String())
+		logrus.Infof("[DEVICE_MANAGER] assigned fingerprint %s/%s to device %s",
+			fp.PlatformType, fp.Os, deviceID)
+		if m.storage != nil {
+			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				DeviceID:    inst.ID(),
+				DisplayName: inst.DisplayName(),
+				JID:         inst.JID(),
+				ProxyURL:    inst.ProxyURL(),
+				Fingerprint: inst.Fingerprint(),
+				UpdatedAt:   time.Now(),
+			})
+		}
+	}
+
+	if err := m.configureKeysStore(ctx, storeDevice); err != nil {
+		inst.clientInitErr = fmt.Errorf("failed to configure keys store: %w", err)
 		return nil, inst.clientInitErr
 	}
 
+	// Apply the device fingerprint to the global DeviceProps and create the client
+	// atomically under the mutex to prevent races between concurrent EnsureClient calls.
+	fp, ok := ParseFingerprint(inst.Fingerprint())
+	if !ok {
+		fp = RandomFingerprint()
+		inst.SetFingerprint(fp.String())
+		if m.storage != nil {
+			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				DeviceID:    inst.ID(),
+				DisplayName: inst.DisplayName(),
+				JID:         inst.JID(),
+				ProxyURL:    inst.ProxyURL(),
+				Fingerprint: inst.Fingerprint(),
+				UpdatedAt:   time.Now(),
+			})
+		}
+	}
+	devicePropsMu.Lock()
+	applyFingerprintLocked(fp)
+	baseLogger := waLog.Stdout(fmt.Sprintf("Client-%s", deviceID), config.WhatsappLogLevel, true)
+	client := whatsmeow.NewClient(storeDevice, newFilteredLogger(baseLogger))
+	devicePropsMu.Unlock()
+	client.EnableAutoReconnect = true
+	client.AutoTrustIdentity = true
+	client.SetForceActiveDeliveryReceipts(true)
+
+	if proxyURL := inst.ProxyURL(); proxyURL != "" {
+		if err := client.SetProxyAddress(proxyURL); err != nil {
+			logrus.Errorf("[DEVICE_MANAGER] failed to apply proxy %s to device %s: %v", maskProxyURL(proxyURL), deviceID, err)
+		} else {
+			logrus.Infof("[DEVICE_MANAGER] applying proxy %s to device %s", maskProxyURL(proxyURL), deviceID)
+		}
+	}
+
+	repo := inst.GetChatStorage()
+	if repo == nil {
+		repo = newDeviceChatStorage(deviceID, m.storage)
+		inst.SetChatStorage(repo)
+	}
+
+	client.AddEventHandler(func(rawEvt interface{}) {
+		handler(ctx, inst, rawEvt)
+	})
+
+	inst.SetOnLoggedOut(func(deviceID string) {
+		m.RemoveDevice(deviceID)
+	})
+
+	inst.SetClient(client)
+	inst.UpdateStateFromClient()
 	return inst, nil
 }
 
