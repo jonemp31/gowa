@@ -34,7 +34,7 @@ var (
 	WhatsappWebhookSecret             = "secret"
 	WhatsappWebhookInsecureSkipVerify = false          // Skip TLS certificate verification for webhooks (insecure)
 	WhatsappWebhookEvents             []string         // Whitelist of events to forward to webhook (empty = all events)
-	WhatsappApiName                   = ""             // Human-readable identifier injected into every webhook payload as "api_name"
+	WhatsappApiName                            = ""    // Human-readable identifier injected into every webhook payload as "api_name"
 	WhatsappAutoRejectCall                     = false // Auto-reject incoming calls
 	WhatsappLogLevel                           = "ERROR"
 	WhatsappSettingMaxImageSize       int64    = 20000000  // 20MB
