@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"image"
 	_ "image/gif"  // Register GIF format
-	_ "image/jpeg" // For JPEG encoding
+	"image/jpeg"
 	_ "image/png"  // For PNG encoding
 	"io"
 	"math"
@@ -77,6 +77,7 @@ type Metadata struct {
 	Description string
 	Image       string
 	ImageThumb  []byte
+	JPEGThumb   []byte
 	Height      *uint32
 	Width       *uint32
 }
@@ -206,6 +207,14 @@ func GetMetaDataFromURL(urlStr string) (meta Metadata, err error) {
 							}
 
 							logrus.Debugf("Image dimensions: %dx%d", width, height)
+
+							// Encode as JPEG for WhatsApp JPEGThumbnail field
+							var jpegBuf bytes.Buffer
+							if encErr := jpeg.Encode(&jpegBuf, img, &jpeg.Options{Quality: 75}); encErr == nil {
+								meta.JPEGThumb = jpegBuf.Bytes()
+							} else {
+								logrus.Warnf("Failed to encode thumbnail as JPEG: %v", encErr)
+							}
 						}
 					}
 				}

@@ -893,7 +893,7 @@ func (service serviceSend) SendLink(ctx context.Context, request domainSend.Link
 		Title:         proto.String(metadata.Title),
 		MatchedText:   proto.String(request.Link),
 		Description:   proto.String(metadata.Description),
-		JPEGThumbnail: metadata.ImageThumb,
+		JPEGThumbnail: metadata.JPEGThumb,
 	}}
 
 	if request.BaseRequest.IsForwarded {
@@ -911,14 +911,16 @@ func (service serviceSend) SendLink(ctx context.Context, request domainSend.Link
 	}
 
 	// If we have a thumbnail image, upload it to WhatsApp's servers
-	if len(metadata.ImageThumb) > 0 && metadata.Height != nil && metadata.Width != nil {
-		uploadedThumb, err := service.uploadMedia(ctx, client, whatsmeow.MediaLinkThumbnail, metadata.ImageThumb, dataWaRecipient)
+	if len(metadata.JPEGThumb) > 0 && metadata.Height != nil && metadata.Width != nil {
+		uploadedThumb, err := service.uploadMedia(ctx, client, whatsmeow.MediaLinkThumbnail, metadata.JPEGThumb, dataWaRecipient)
 		if err == nil {
 			// Update the message with the uploaded thumbnail information
+			mediaKeyTimestamp := time.Now().Unix()
 			msg.ExtendedTextMessage.ThumbnailDirectPath = proto.String(uploadedThumb.DirectPath)
 			msg.ExtendedTextMessage.ThumbnailSHA256 = uploadedThumb.FileSHA256
 			msg.ExtendedTextMessage.ThumbnailEncSHA256 = uploadedThumb.FileEncSHA256
 			msg.ExtendedTextMessage.MediaKey = uploadedThumb.MediaKey
+			msg.ExtendedTextMessage.MediaKeyTimestamp = proto.Int64(mediaKeyTimestamp)
 			msg.ExtendedTextMessage.ThumbnailHeight = metadata.Height
 			msg.ExtendedTextMessage.ThumbnailWidth = metadata.Width
 		} else {

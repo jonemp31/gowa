@@ -134,6 +134,19 @@ func ExtractMessageTextFromProto(msg *waE2E.Message) string {
 		return templateButtonReply.GetSelectedDisplayText()
 	}
 
+	// Check for contact message
+	if contact := msg.GetContactMessage(); contact != nil {
+		if name := contact.GetDisplayName(); name != "" {
+			return "Contact: " + name
+		}
+		return "Contact"
+	}
+
+	// Check for contacts array message
+	if msg.GetContactsArrayMessage() != nil {
+		return "Contacts shared"
+	}
+
 	return ""
 }
 
