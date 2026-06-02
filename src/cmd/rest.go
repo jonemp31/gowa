@@ -168,6 +168,9 @@ func restServer(_ *cobra.Command, _ []string) {
 	// Set auto reconnect checking with a guaranteed client instance
 	startAutoReconnectCheckerIfClientAvailable()
 
+	// Human-like daily presence scheduler: 8 randomised windows per device per day
+	go helpers.SetDailyPresenceScheduler(appUsecase)
+
 	// Set daily presence pulse scheduler when enabled
 	startPresencePulseSchedulerIfEnabled()
 

@@ -68,20 +68,47 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 	}()
 }
 
-// SetDailyPresenceScheduler runs a background goroutine that sends a randomised
-// presence signal for every registered device once per day:
-//   - Between 06:00–10:00 local time: PresenceAvailable (brief online signal)
-//   - Between 20:00–00:00 local time: PresenceUnavailable (offline signal)
-//
-// Each device gets its own random time within the window so that 115 devices
-// do not all broadcast at exactly the same second. The scheduler recalculates
-// at each local midnight, so it stays accurate across DST changes.
+// presenceWindow defines a time window during which a device may appear online.
+// Each device draws its own random firing time within [startH:startM, endH:endM]
+// and a random online duration within [minSec, maxSec]. skipPct is the percent
+// chance (0–100) that a device skips this window entirely for that day,
+// simulating a busy or distracted user.
+type presenceWindow struct {
+	name    string
+	startH  int
+	startM  int
+	endH    int
+	endM    int
+	minSec  int
+	maxSec  int
+	skipPct int
+}
+
+// dailyPresenceWindows defines 8 human-like activity slots spread across the day.
+// Silence is enforced between 23:30 and 07:00 (sleeping hours).
+// Window durations and skip rates are tuned to produce ~6–8 signals/day
+// and ~10–30 min total online time per device.
+var dailyPresenceWindows = []presenceWindow{
+	{"wake_up", 7, 0, 8, 30, 15, 45, 20},    // quick check on waking
+	{"morning_commute", 8, 45, 9, 30, 20, 60, 20},  // coffee / commute scroll
+	{"morning_break", 10, 30, 11, 30, 30, 90, 20},  // mid-morning work break
+	{"lunch", 12, 0, 13, 30, 120, 300, 15},          // lunch — longer session
+	{"afternoon_break", 15, 0, 16, 0, 20, 60, 20},  // afternoon pause
+	{"end_of_work", 17, 30, 19, 0, 60, 180, 20},    // leaving work / commute
+	{"evening", 20, 0, 22, 0, 180, 480, 10},         // main evening session (low skip)
+	{"pre_sleep", 22, 30, 23, 30, 30, 90, 20},       // last check before bed
+}
+
+// SetDailyPresenceScheduler runs a background goroutine that simulates human-like
+// WhatsApp presence for every registered device. Each device independently draws
+// random firing times and online durations across 8 daily windows (07:00–23:30),
+// with a per-window skip probability that mimics busy or distracted days.
+// The scheduler recalculates at each local midnight to stay accurate across DST changes.
 func SetDailyPresenceScheduler(service domainApp.IAppUsecase) {
 	go func() {
 		for {
 			now := time.Now()
 			scheduleDayPresences(service, now)
-			// Sleep until 00:01 next day to recalculate for the new date
 			tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 1, 0, 0, now.Location())
 			time.Sleep(time.Until(tomorrow))
 		}
@@ -103,35 +130,41 @@ func scheduleDevicePresences(service domainApp.IAppUsecase, device domainApp.Dev
 	loc := now.Location()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 
-	// Morning window 06:00–10:00 → send PresenceAvailable briefly
-	morningAt := today.Add(6*time.Hour + time.Duration(rand.Int63n(int64(4*time.Hour))))
-	// Evening window 20:00–00:00 → send PresenceUnavailable
-	eveningAt := today.Add(20*time.Hour + time.Duration(rand.Int63n(int64(4*time.Hour))))
+	for _, w := range dailyPresenceWindows {
+		// Each window is evaluated independently per device.
+		// Capture loop variable for the goroutine closure.
+		win := w
 
-	if morningAt.After(now) {
-		time.Sleep(time.Until(morningAt))
-		ctx := context.Background()
-		if err := service.SendDevicePresence(ctx, device.Device, "available"); err != nil {
-			logrus.Warnf("[PRESENCE-SCHEDULER] morning available failed for %s: %v", device.Device, err)
-		} else {
-			logrus.Infof("[PRESENCE-SCHEDULER] sent morning available for %s", device.Device)
+		// ~skipPct% chance to skip this window (simulates a busy day).
+		if rand.Intn(100) < win.skipPct {
+			continue
 		}
-		// Brief online window then go back offline
-		time.Sleep(time.Duration(10+rand.Intn(20)) * time.Second)
-		_ = service.SendDevicePresence(ctx, device.Device, "unavailable")
-	}
 
-	if eveningAt.After(now) {
-		time.Sleep(time.Until(eveningAt))
-		ctx := context.Background()
-		if err := service.SendDevicePresence(ctx, device.Device, "available"); err != nil {
-			logrus.Warnf("[PRESENCE-SCHEDULER] evening available failed for %s: %v", device.Device, err)
-		} else {
-			logrus.Infof("[PRESENCE-SCHEDULER] sent evening available for %s", device.Device)
+		// Draw a random fire time within [windowStart, windowEnd].
+		windowStart := today.Add(time.Duration(win.startH)*time.Hour + time.Duration(win.startM)*time.Minute)
+		windowEnd := today.Add(time.Duration(win.endH)*time.Hour + time.Duration(win.endM)*time.Minute)
+		span := windowEnd.Sub(windowStart)
+		fireAt := windowStart.Add(time.Duration(rand.Int63n(int64(span))))
+
+		// Skip windows that have already passed today (e.g. scheduler started mid-day).
+		if !fireAt.After(now) {
+			continue
 		}
-		// Brief online window then go offline for the night
-		time.Sleep(time.Duration(45+rand.Intn(46)) * time.Second)
-		_ = service.SendDevicePresence(ctx, device.Device, "unavailable")
+
+		// Draw random online duration within [minSec, maxSec].
+		onlineSec := win.minSec + rand.Intn(win.maxSec-win.minSec+1)
+
+		go func(at time.Time, seconds int, label string) {
+			time.Sleep(time.Until(at))
+			ctx := context.Background()
+			if err := service.SendDevicePresence(ctx, device.Device, "available"); err != nil {
+				logrus.Warnf("[PRESENCE-SCHEDULER] %s available failed for %s: %v", label, device.Device, err)
+				return
+			}
+			logrus.Infof("[PRESENCE-SCHEDULER] %s: %s online for %ds", label, device.Device, seconds)
+			time.Sleep(time.Duration(seconds) * time.Second)
+			_ = service.SendDevicePresence(ctx, device.Device, "unavailable")
+		}(fireAt, onlineSec, win.name)
 	}
 }
 
