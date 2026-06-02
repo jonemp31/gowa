@@ -56,6 +56,19 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 		handleConnectionEvents(ctx, client, instance)
 	case *events.StreamReplaced:
 		handleStreamReplaced(ctx, instance)
+	case *events.Disconnected:
+		instance.SetState(domainDevice.DeviceStateDisconnected)
+		if len(config.WhatsappWebhook) > 0 {
+			ForwardConnectionEvent(map[string]any{
+				"event": "disconnection",
+				"payload": map[string]any{
+					"device_id": instance.ID(),
+					"jid":       instance.JID(),
+					"reason":    "connection_lost",
+					"timestamp": time.Now().Unix(),
+				},
+			}, "disconnection")
+		}
 	case *events.Message:
 		handleMessage(ctx, evt, chatStorageRepo, client)
 	case *events.Receipt:
