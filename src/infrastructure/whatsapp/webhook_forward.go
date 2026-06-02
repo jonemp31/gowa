@@ -80,6 +80,10 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		return nil
 	}
 
+	if config.WhatsappApiName != "" {
+		payload["api_name"] = config.WhatsappApiName
+	}
+
 	var err error
 	if webhookAllowed {
 		err = forwardToWebhooks(ctx, payload, eventName)
