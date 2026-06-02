@@ -150,12 +150,19 @@ func (m *DeviceManager) PurgeDevice(ctx context.Context, deviceID string) error 
 		}
 	}
 
-	// Attempt logout/disconnect if a client exists
+	// Attempt logout/disconnect if a client exists.
+	// Logout is only meaningful when the device has an active session (Store.ID != nil).
+	// Devices that were never logged in or had their session revoked remotely have no
+	// JID in the store — calling Logout() on them returns "the store doesn't contain a
+	// device JID" from whatsmeow. We skip Logout() in that case and just Disconnect(),
+	// which is sufficient to cleanly remove the device.
 	if inst, ok := m.GetDevice(deviceID); ok && inst != nil {
 		if cli := inst.GetClient(); cli != nil {
-			if err := cli.Logout(ctx); err != nil {
-				logrus.WithError(err).Warnf("[DEVICE_MANAGER] logout failed for device %s", deviceID)
-				recordErr(err)
+			if cli.Store != nil && cli.Store.ID != nil {
+				if err := cli.Logout(ctx); err != nil {
+					logrus.WithError(err).Warnf("[DEVICE_MANAGER] logout failed for device %s", deviceID)
+					recordErr(err)
+				}
 			}
 			cli.Disconnect()
 		}
