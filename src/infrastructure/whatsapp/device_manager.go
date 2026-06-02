@@ -71,6 +71,19 @@ func (m *DeviceManager) GetDevice(id string) (*DeviceInstance, bool) {
 	return instance, ok
 }
 
+// IsHealthy returns true if the device manager is initialized and has a valid store connection.
+// Note: This is a service initialization check, not a live connectivity check.
+// Returning true indicates the internal store is ready, but does not guarantee
+// that any WhatsApp device connections are currently active or authenticated.
+func (m *DeviceManager) IsHealthy() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.store != nil
+}
+
 // DefaultDevice returns the only registered device when running in single-device mode.
 func (m *DeviceManager) DefaultDevice() *DeviceInstance {
 	if m == nil {
@@ -559,7 +572,7 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 		inst.SetChatStorage(repo)
 	}
 
-	client.AddEventHandler(func(rawEvt interface{}) {
+	client.AddEventHandler(func(rawEvt any) {
 		handler(ctx, inst, rawEvt)
 	})
 
@@ -658,12 +671,7 @@ func (m *DeviceManager) configureKeysStore(ctx context.Context, device *store.De
 	innerStore := sqlstore.NewSQLStore(m.keys, *device.ID)
 	syncKeysDevice(ctx, m.store, m.keys)
 
-	device.Identities = innerStore
-	device.Sessions = innerStore
-	device.PreKeys = innerStore
-	device.SenderKeys = innerStore
-	device.MsgSecrets = innerStore
-	device.PrivacyTokens = innerStore
+	applyKeyCacheStore(device, innerStore)
 	return nil
 }
 

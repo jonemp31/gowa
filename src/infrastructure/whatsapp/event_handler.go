@@ -1,4 +1,4 @@
-package whatsapp
+﻿package whatsapp
 
 import (
 	"context"
@@ -73,12 +73,16 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 		handleMessage(ctx, evt, chatStorageRepo, client)
 	case *events.Receipt:
 		handleReceipt(ctx, evt, instance.JID(), client)
+	case *events.Archive:
+		handleArchive(ctx, evt, chatStorageRepo, client)
 	case *events.Presence:
 		handlePresence(ctx, evt, instance.JID())
+	case *events.ChatPresence:
+		handleChatPresence(ctx, evt, instance.JID(), client)
 	case *events.HistorySync:
 		handleHistorySync(ctx, evt, chatStorageRepo, client)
 	case *events.AppState:
-		handleAppState(ctx, evt)
+		handleAppState(ctx, evt, instance.JID(), client)
 	case *events.GroupInfo:
 		handleGroupInfo(ctx, evt, instance.JID(), client)
 	case *events.JoinedGroup:
@@ -92,7 +96,7 @@ func handler(ctx context.Context, instance *DeviceInstance, rawEvt any) {
 	case *events.NewsletterMuteChange:
 		handleNewsletterMuteChange(ctx, evt, instance.JID(), client)
 	case *events.CallOffer:
-		handleCallOffer(ctx, evt, instance.JID(), client)
+		handleCallOffer(ctx, evt, chatStorageRepo, instance.JID(), client)
 	}
 
 	instance.UpdateStateFromClient()
@@ -335,8 +339,18 @@ func handlePresence(_ context.Context, evt *events.Presence, deviceID string) {
 	}
 }
 
-func handleAppState(_ context.Context, evt *events.AppState) {
+func handleAppState(_ context.Context, evt *events.AppState, deviceID string, client *whatsmeow.Client) {
 	log.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
+
+	if len(config.WhatsappWebhook) > 0 && isLabelAppState(evt) {
+		go func(e *events.AppState, c *whatsmeow.Client) {
+			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := forwardLabelAppStateToWebhook(webhookCtx, e, deviceID, c); err != nil {
+				logrus.Errorf("Failed to forward label appstate event to webhook: %v", err)
+			}
+		}(evt, client)
+	}
 }
 
 func handleGroupInfo(ctx context.Context, evt *events.GroupInfo, deviceID string, client *whatsmeow.Client) {
@@ -373,3 +387,4 @@ func handleGroupInfo(ctx context.Context, evt *events.GroupInfo, deviceID string
 		}(evt, client)
 	}
 }
+

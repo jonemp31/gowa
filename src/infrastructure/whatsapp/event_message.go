@@ -18,6 +18,8 @@ import (
 	"go.mau.fi/whatsmeow/types/events"
 )
 
+var reMention = regexp.MustCompile(`\B@\w+`)
+
 // Event types for webhook payload
 const (
 	EventTypeMessage         = "message"
@@ -31,6 +33,12 @@ type WebhookEvent struct {
 	Event    string         `json:"event"`
 	DeviceID string         `json:"device_id"`
 	Payload  map[string]any `json:"payload"`
+}
+
+type webhookContactPayload struct {
+	DisplayName string `json:"displayName"`
+	VCard       string `json:"vcard"`
+	PhoneNumber string `json:"phone_number,omitempty"`
 }
 
 // forwardMessageToWebhook is a helper function to forward message event to webhook url
@@ -47,6 +55,14 @@ func forwardMessageToWebhook(ctx context.Context, client *whatsmeow.Client, evt 
 	}
 
 	return forwardPayloadToConfiguredWebhooks(ctx, payload, webhookEvent.Event)
+}
+
+func isReactionMessage(evt *events.Message) bool {
+	if evt == nil || evt.Message == nil {
+		return false
+	}
+
+	return utils.UnwrapMessage(evt.Message).GetReactionMessage() != nil
 }
 
 func createWebhookEvent(ctx context.Context, client *whatsmeow.Client, evt *events.Message) (*WebhookEvent, error) {
@@ -89,6 +105,21 @@ func buildEventPayload(ctx context.Context, client *whatsmeow.Client, evt *event
 	// Set from_name (pushname)
 	if pushname := evt.Info.PushName; pushname != "" {
 		payload["from_name"] = pushname
+	}
+
+	// Modern WhatsApp clients (LID-migrated accounts on recent app builds) wrap
+	// message edits in a SecretEncryptedMessage with encType=MESSAGE_EDIT instead
+	// of sending them as a plain ProtocolMessage{MESSAGE_EDIT}. Decrypt those
+	// here using whatsmeow's existing helper, then fall through to the standard
+	// MESSAGE_EDIT extraction path using the decrypted inner Message.
+	if sem := msg.GetSecretEncryptedMessage(); sem != nil &&
+		sem.GetSecretEncType() == waE2E.SecretEncryptedMessage_MESSAGE_EDIT &&
+		client != nil {
+		if decrypted, err := client.DecryptSecretEncryptedMessage(ctx, evt); err != nil {
+			logrus.Warnf("Failed to decrypt SecretEncryptedMessage(MESSAGE_EDIT) for %s: %v", evt.Info.ID, err)
+		} else if decrypted != nil {
+			msg = utils.UnwrapMessage(decrypted)
+		}
 	}
 
 	// Check for protocol messages (revoke, edit)
@@ -165,7 +196,7 @@ func buildMessageBody(ctx context.Context, client *whatsmeow.Client, evt *events
 
 	// Replace LID mentions with phone numbers in text
 	if message.Text != "" && client != nil && client.Store != nil && client.Store.LIDs != nil {
-		tags := regexp.MustCompile(`\B@\w+`).FindAllString(message.Text, -1)
+		tags := reMention.FindAllString(message.Text, -1)
 		tagsMap := make(map[string]bool)
 		for _, tag := range tags {
 			tagsMap[tag] = true
@@ -215,6 +246,10 @@ func buildOptionalFields(ctx context.Context, client *whatsmeow.Client, evt *eve
 
 	if utils.BuildForwarded(evt) {
 		payload["forwarded"] = true
+	}
+
+	if referral := utils.ExtractExternalAdReply(msg); referral != nil {
+		payload["referral"] = referral
 	}
 
 	if err := buildMediaFields(ctx, client, msg, payload); err != nil {
@@ -338,7 +373,11 @@ func buildAutoDownloadPayload(extracted utils.ExtractedMedia) any {
 
 func buildOtherMessageTypes(msg *waE2E.Message, payload map[string]any) {
 	if contactMessage := msg.GetContactMessage(); contactMessage != nil {
-		payload["contact"] = contactMessage
+		payload["contact"] = buildWebhookContactPayload(contactMessage)
+	}
+
+	if contactsArrayMessage := msg.GetContactsArrayMessage(); contactsArrayMessage != nil {
+		payload["contacts_array"] = buildWebhookContactsArrayPayload(contactsArrayMessage.GetContacts())
 	}
 
 	if listMessage := msg.GetListMessage(); listMessage != nil {
@@ -356,4 +395,28 @@ func buildOtherMessageTypes(msg *waE2E.Message, payload map[string]any) {
 	if orderMessage := msg.GetOrderMessage(); orderMessage != nil {
 		payload["order"] = orderMessage
 	}
+}
+
+func buildWebhookContactPayload(contact *waE2E.ContactMessage) webhookContactPayload {
+	if contact == nil {
+		return webhookContactPayload{}
+	}
+
+	vcard := contact.GetVcard()
+	return webhookContactPayload{
+		DisplayName: contact.GetDisplayName(),
+		VCard:       vcard,
+		PhoneNumber: utils.ExtractPhoneFromVCard(vcard),
+	}
+}
+
+func buildWebhookContactsArrayPayload(contacts []*waE2E.ContactMessage) []webhookContactPayload {
+	result := make([]webhookContactPayload, 0, len(contacts))
+	for _, contact := range contacts {
+		if contact == nil {
+			continue
+		}
+		result = append(result, buildWebhookContactPayload(contact))
+	}
+	return result
 }

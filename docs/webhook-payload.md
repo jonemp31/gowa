@@ -20,6 +20,7 @@ The following events can be received via webhook:
 | `message.edited`     | Edited messages                                         |
 | `message.ack`        | Delivery and read receipts                              |
 | `message.deleted`    | Messages deleted for the user                           |
+| `chat_presence`      | Typing and recording indicators from contacts           |
 | `group.participants` | Group member join/leave/promote/demote events           |
 | `group.joined`       | You were added to a group                               |
 | `newsletter.joined`  | You subscribed to a newsletter/channel                  |
@@ -138,7 +139,7 @@ All webhook payloads follow a consistent top-level structure:
 
 | **Field**   | **Type** | **Description**                                                                                                     |
 |-------------|----------|---------------------------------------------------------------------------------------------------------------------|
-| `event`     | string   | Event type: `message`, `message.reaction`, `message.revoked`, `message.edited`, `message.ack`, `message.deleted`, `group.participants`, `group.joined`, `newsletter.joined`, `newsletter.left`, `newsletter.message`, `newsletter.mute`, `call.offer` |
+| `event`     | string   | Event type: `message`, `message.reaction`, `message.revoked`, `message.edited`, `message.ack`, `message.deleted`, `chat_presence`, `group.participants`, `group.joined`, `newsletter.joined`, `newsletter.left`, `newsletter.message`, `newsletter.mute`, `call.offer` |
 | `device_id` | string   | JID of the device that received this event (e.g., `628123456789@s.whatsapp.net`)                                    |
 | `payload`   | object   | Event-specific payload data                                                                                         |
 
@@ -277,6 +278,106 @@ Triggered when a message is read by the recipient (they opened the chat and saw 
 | `payload.from_lid`                 | string   | LID of the user (if available)                            |
 | `payload.receipt_type`             | string   | Type of receipt: `"delivered"`, `"read"`, etc.            |
 | `payload.receipt_type_description` | string   | Human-readable description of the receipt type            |
+
+## Chat Presence Events
+
+Chat presence events are triggered when a contact starts or stops typing (or recording audio) in a chat.
+These events use the `chat_presence` event type and are useful for implementing message batching strategies.
+
+**Note:** WhatsApp only sends chat presence updates when the client is marked as online. GOWA defaults to
+`unavailable` on connection, but the daily presence pulse periodically marks connected devices as `available`
+and then returns them to `unavailable`.
+
+### User Typing
+
+Triggered when a user starts typing a text message.
+
+```json
+{
+  "event": "chat_presence",
+  "device_id": "628123456789@s.whatsapp.net",
+  "timestamp": "2026-01-22T12:00:00Z",
+  "payload": {
+    "from": "628987654321@s.whatsapp.net",
+    "chat_id": "628987654321@s.whatsapp.net",
+    "state": "composing",
+    "media": "",
+    "is_group": false
+  }
+}
+```
+
+### User Stopped Typing
+
+Triggered when a user stops typing (pauses or clears the input field).
+
+```json
+{
+  "event": "chat_presence",
+  "device_id": "628123456789@s.whatsapp.net",
+  "timestamp": "2026-01-22T12:00:05Z",
+  "payload": {
+    "from": "628987654321@s.whatsapp.net",
+    "chat_id": "628987654321@s.whatsapp.net",
+    "state": "paused",
+    "media": "",
+    "is_group": false
+  }
+}
+```
+
+### User Recording Audio
+
+Triggered when a user starts recording a voice message.
+
+```json
+{
+  "event": "chat_presence",
+  "device_id": "628123456789@s.whatsapp.net",
+  "timestamp": "2026-01-22T12:01:00Z",
+  "payload": {
+    "from": "628987654321@s.whatsapp.net",
+    "chat_id": "628987654321@s.whatsapp.net",
+    "state": "composing",
+    "media": "audio",
+    "is_group": false
+  }
+}
+```
+
+### Group Typing
+
+Triggered when a user starts typing in a group chat.
+
+```json
+{
+  "event": "chat_presence",
+  "device_id": "628123456789@s.whatsapp.net",
+  "timestamp": "2026-01-22T12:02:00Z",
+  "payload": {
+    "from": "628987654321@s.whatsapp.net",
+    "from_lid": "251556368777322@lid",
+    "chat_id": "120363402106XXXXX@g.us",
+    "state": "composing",
+    "media": "",
+    "is_group": true
+  }
+}
+```
+
+### Chat Presence Event Fields
+
+| **Field**          | **Type** | **Description**                                                    |
+|--------------------|----------|--------------------------------------------------------------------|
+| `event`            | string   | Always `"chat_presence"` for typing events                         |
+| `device_id`        | string   | JID of the device that received this event                         |
+| `timestamp`        | string   | RFC3339 formatted timestamp when the event was processed           |
+| `payload.from`     | string   | JID of the user who is typing (e.g., `628987654321@s.whatsapp.net`)|
+| `payload.from_lid` | string   | LID of the user (if available, typically in group chats)           |
+| `payload.chat_id`  | string   | Chat identifier (individual or group)                              |
+| `payload.state`    | string   | Typing state: `"composing"` (typing) or `"paused"` (stopped)      |
+| `payload.media`    | string   | Media type: `""` (text message) or `"audio"` (voice recording)    |
+| `payload.is_group` | boolean  | Whether this is a group chat                                       |
 
 ## Group Events
 
@@ -475,6 +576,10 @@ Triggered when you mute or unmute a newsletter.
 
 Call events are triggered when you receive an incoming WhatsApp call. You can optionally auto-reject calls using the
 `WHATSAPP_AUTO_REJECT_CALL` environment variable or `--auto-reject-call` CLI flag.
+
+When chat storage is enabled, each incoming call is also persisted as a synthetic message in the chat history:
+`media_type` is `call`, `content` is `Incoming call`, and `call_metadata` (JSON) holds `call_id`, `auto_rejected`, and
+optional `remote_platform`, `remote_version`, and `group_jid`. List chat messages via the REST/MCP chat APIs to retrieve these rows.
 
 ### Call Offer
 
@@ -733,6 +838,8 @@ With auto-download disabled:
 
 ### Contact Message
 
+When a user shares a single contact:
+
 ```json
 {
   "event": "message",
@@ -745,11 +852,44 @@ With auto-download disabled:
     "timestamp": "2025-07-13T11:10:19Z",
     "contact": {
       "displayName": "3Care",
-      "vcard": "BEGIN:VCARD\nVERSION:3.0\nN:;3Care;;;\nFN:3Care\nTEL;type=Mobile:+62 132\nEND:VCARD"
+      "vcard": "BEGIN:VCARD\nVERSION:3.0\nN:;3Care;;;\nFN:3Care\nTEL;type=Mobile:+62 132\nEND:VCARD",
+      "phone_number": "+62 132"
     }
   }
 }
 ```
+
+### Contacts Array Message
+
+When a user shares multiple contacts at once (via WhatsApp's multi-contact share feature):
+
+```json
+{
+  "event": "message",
+  "device_id": "628987654321@s.whatsapp.net",
+  "payload": {
+    "id": "A1B2C3D4E5F6789012345678",
+    "chat_id": "628987654321@s.whatsapp.net",
+    "from": "628123456789@s.whatsapp.net",
+    "from_name": "John Doe",
+    "timestamp": "2025-07-13T11:10:19Z",
+    "contacts_array": [
+      {
+        "displayName": "Alice",
+        "vcard": "BEGIN:VCARD\nVERSION:3.0\nN:;Alice;;;\nFN:Alice\nTEL;type=Mobile:+62 812 3456 7890\nEND:VCARD",
+        "phone_number": "+62 812 3456 7890"
+      },
+      {
+        "displayName": "Bob",
+        "vcard": "BEGIN:VCARD\nVERSION:3.0\nN:;Bob;;;\nFN:Bob\nTEL;type=Mobile:+62 813 9876 5432\nEND:VCARD",
+        "phone_number": "+62 813 9876 5432"
+      }
+    ]
+  }
+}
+```
+
+> **Note:** WhatsApp uses `ContactMessage` (field 4) for a single contact and `ContactsArrayMessage` (field 13) for multiple contacts. A single contact produces `"contact"`, while multiple contacts produce `"contacts_array"`.
 
 ### Location Message
 
@@ -915,6 +1055,68 @@ When a message is edited, the webhook includes the original message ID to track 
   }
 }
 ```
+
+### Meta Ads Referral (Click-to-WhatsApp)
+
+When a conversation starts from a Meta Click-to-WhatsApp ad, the first inbound message includes ad attribution metadata in the `referral` field. This is extracted from the WhatsApp protocol's `contextInfo.externalAdReply`.
+
+```json
+{
+  "event": "message",
+  "device_id": "628987654321@s.whatsapp.net",
+  "payload": {
+    "id": "3EB0C127D7BACC83D6B4",
+    "chat_id": "628987654321@s.whatsapp.net",
+    "from": "628123456789@s.whatsapp.net",
+    "from_name": "Jane Customer",
+    "timestamp": "2023-10-15T12:00:00Z",
+    "is_from_me": false,
+    "body": "Hello! I would like more information about the property.",
+    "referral": {
+      "ctwa_clid": "FAKE_CLID_abc123xyz",
+      "source_url": "https://fb.me/fake-ad-link",
+      "source_id": "123456789012345",
+      "ref": "landing_page_01",
+      "source_app": "facebook",
+      "media_type": "IMAGE",
+      "ad_title": "Your Dream Farm",
+      "ad_body": "Discover exclusive rural properties in the countryside.",
+      "thumbnail_url": "https://example.com/ad-thumbnail.jpg",
+      "original_image_url": "https://example.com/ad-image.jpg",
+      "show_ad_attribution": true,
+      "click_to_whatsapp_call": false,
+      "contains_auto_reply": false,
+      "automated_greeting_message_shown": true,
+      "greeting_message_body": "Hello! I want to know more about this ad.",
+      "source_type": "ad",
+      "ad_type": "CTWA"
+    }
+  }
+}
+```
+
+**Referral fields** (all optional, only present when the message originated from a Meta ad):
+
+| **Field**                          | **Type** | **Description**                                                    |
+|------------------------------------|----------|--------------------------------------------------------------------|
+| `ctwa_clid`                        | string   | Meta Click-to-WhatsApp click ID for ad attribution                 |
+| `source_url`                       | string   | Landing page / ad destination URL                                  |
+| `source_id`                        | string   | Meta ad creative or ad set ID                                      |
+| `ref`                              | string   | The `ref` parameter set on the WhatsApp button in the ad           |
+| `source_app`                       | string   | Origin platform: `"facebook"` or `"instagram"`                     |
+| `media_type`                       | string   | Ad creative media type: `"NONE"`, `"IMAGE"`, or `"VIDEO"`         |
+| `ad_title`                         | string   | Ad creative title                                                  |
+| `ad_body`                          | string   | Ad creative description/body text                                  |
+| `thumbnail_url`                    | string   | URL of the ad thumbnail image                                      |
+| `original_image_url`               | string   | URL of the original ad image                                       |
+| `media_url`                        | string   | URL of the ad media                                                |
+| `show_ad_attribution`              | boolean  | Whether to show the ad attribution badge                           |
+| `contains_auto_reply`              | boolean  | Whether the ad has a pre-filled auto-reply message                 |
+| `automated_greeting_message_shown` | boolean  | Whether the automated greeting was shown to the user               |
+| `greeting_message_body`            | string   | Body text of the automated greeting message                        |
+| `click_to_whatsapp_call`           | boolean  | Whether this is a Click-to-WhatsApp Call ad (vs chat)              |
+| `source_type`                      | string   | Source type (e.g., `"ad"`)                                         |
+| `ad_type`                          | string   | Ad type: `"CTWA"` (Click-to-WhatsApp) or `"CAWC"` (Click-to-Call) |
 
 ## Integration Guide
 

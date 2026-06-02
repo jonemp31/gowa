@@ -78,21 +78,18 @@ func restServer(_ *cobra.Command, _ []string) {
 		AllowHeaders: "Origin, Content-Type, Accept",
 	}))
 
-	// Health check - no authentication required
-	healthPath := "/health"
-	if config.AppBasePath != "" {
-		healthPath = config.AppBasePath + healthPath
-	}
-	app.Get(healthPath, func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status":    "ok",
-			"version":   config.AppVersion,
-			"timestamp": time.Now().Unix(),
-		})
-	})
-
-	// Device manager - needed for chatwoot webhook
+	// Device manager - needed for chatwoot webhook and health check
 	dm := whatsapp.GetDeviceManager()
+
+	// Health check endpoint (public, no auth)
+	// Registered at root path (ignoring AppBasePath) to ensure fixed availability
+	// for infrastructure health probes (Kubernetes liveness/readiness, Docker healthcheck, etc.)
+	app.Get("/health", func(c *fiber.Ctx) error {
+		if dm != nil && dm.IsHealthy() {
+			return c.SendString("OK")
+		}
+		return c.Status(http.StatusServiceUnavailable).SendString("Service Unavailable")
+	})
 
 	// Chatwoot webhook - registered BEFORE basic auth middleware
 	// This allows Chatwoot to send webhooks without authentication
@@ -171,10 +168,9 @@ func restServer(_ *cobra.Command, _ []string) {
 	// Set auto reconnect checking with a guaranteed client instance
 	startAutoReconnectCheckerIfClientAvailable()
 
-	// Daily presence scheduler: randomised available/unavailable signals per device
-	go helpers.SetDailyPresenceScheduler(appUsecase)
+	// Set daily presence pulse scheduler when enabled
+	startPresencePulseSchedulerIfEnabled()
 
-	// Start media cleanup goroutine if retention is configured
 	if config.MediaRetentionDays > 0 {
 		go func() {
 			logrus.Infof("[MEDIA-CLEANUP] Media retention enabled: %d days, checking every 6 hours", config.MediaRetentionDays)

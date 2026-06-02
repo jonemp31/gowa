@@ -72,22 +72,23 @@ func getContactMutex(phone string) *sync.Mutex {
 // It only returns an error when all webhook deliveries fail. Partial failures are logged and suppressed so
 // successful targets still receive the event.
 func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]any, eventName string) error {
-	// Check if event is whitelisted (if whitelist is configured)
-	if len(config.WhatsappWebhookEvents) > 0 {
-		if !isEventWhitelisted(eventName) {
-			logrus.Debugf("Skipping event %s - not in webhook events whitelist", eventName)
-			return nil
-		}
+	webhookAllowed := len(config.WhatsappWebhookEvents) == 0 || isEventWhitelisted(eventName)
+	chatwootAllowed := config.ChatwootEnabled && shouldForwardEventToChatwoot(eventName) && isEventWhitelistedForChatwoot(eventName)
+
+	if !webhookAllowed && !chatwootAllowed {
+		logrus.Debugf("Skipping event %s - not allowed for webhooks or Chatwoot", eventName)
+		return nil
 	}
 
-	if config.WhatsappApiName != "" {
-		payload["api_name"] = config.WhatsappApiName
+	var err error
+	if webhookAllowed {
+		err = forwardToWebhooks(ctx, payload, eventName)
+	} else {
+		logrus.Debugf("Skipping event %s for configured webhooks, but allowing Chatwoot", eventName)
 	}
 
-	err := forwardToWebhooks(ctx, payload, eventName)
-
-	if eventName == "message" && config.ChatwootEnabled {
-		go forwardToChatwoot(ctx, payload)
+	if chatwootAllowed {
+		go forwardToChatwoot(ctx, payload, eventName)
 	}
 
 	return err
@@ -139,7 +140,7 @@ type chatwootContactInfo struct {
 // extractChatwootContactInfo extracts contact identifier and name from message payload.
 // For groups, uses the group JID as identifier and tries to fetch group name.
 // For private chats, uses the sender's phone number.
-func extractChatwootContactInfo(ctx context.Context, data map[string]interface{}) (*chatwootContactInfo, error) {
+func extractChatwootContactInfo(ctx context.Context, data map[string]any) (*chatwootContactInfo, error) {
 	from, _ := data["from"].(string)
 	fromName, _ := data["from_name"].(string)
 	chatID, _ := data["chat_id"].(string)
@@ -180,7 +181,7 @@ func extractChatwootContactInfo(ctx context.Context, data map[string]interface{}
 
 // buildChatwootMessageContent extracts message body and attachments from the payload.
 // For group messages, prepends the sender name to the content.
-func buildChatwootMessageContent(data map[string]interface{}, isGroup bool, fromName string) (content string, attachments []string) {
+func buildChatwootMessageContent(data map[string]any, isGroup bool, fromName string) (content string, attachments []string) {
 	if body, ok := data["body"].(string); ok && body != "" {
 		content = body
 	}
@@ -219,31 +220,87 @@ func buildChatwootMessageContent(data map[string]interface{}, isGroup bool, from
 	return content, attachments
 }
 
-func chatwootMessageTypeFromPayload(data map[string]interface{}) string {
+func shouldForwardEventToChatwoot(eventName string) bool {
+	switch eventName {
+	case "message", "message.reaction":
+		return true
+	default:
+		return false
+	}
+}
+
+func isEventWhitelistedForChatwoot(eventName string) bool {
+	if len(config.WhatsappWebhookEvents) == 0 {
+		return true
+	}
+	if isEventWhitelisted(eventName) {
+		return true
+	}
+	return eventName == "message.reaction" && isEventWhitelisted("message")
+}
+
+func buildReactionChatwootContent(data map[string]any, isGroup bool, fromName string) string {
+	reaction, _ := data["reaction"].(string)
+	reactedMessageID, _ := data["reacted_message_id"].(string)
+
+	actor := "Someone"
+	if fromName != "" {
+		actor = fromName
+	} else if from, ok := data["from"].(string); ok && from != "" {
+		actor = utils.ExtractPhoneFromJID(from)
+	}
+
+	if reactedMessageID != "" {
+		if reaction == "" {
+			return fmt.Sprintf("%s removed a reaction from message %s", actor, reactedMessageID)
+		}
+		return fmt.Sprintf("%s reacted %s to message %s", actor, reaction, reactedMessageID)
+	}
+
+	if reaction == "" {
+		return fmt.Sprintf("%s removed a reaction", actor)
+	}
+	return fmt.Sprintf("%s reacted %s", actor, reaction)
+}
+
+func chatwootMessageTypeFromPayload(data map[string]any) string {
 	if isFromMe, ok := data["is_from_me"].(bool); ok && isFromMe {
 		return "outgoing"
 	}
 	return "incoming"
 }
 
-func extractStructuredMessageContent(data map[string]interface{}) string {
+func extractStructuredMessageContent(data map[string]any) string {
 	if contact, ok := data["contact"]; ok && contact != nil {
-		if cm, ok := contact.(interface {
-			GetDisplayName() string
-			GetVcard() string
-		}); ok {
-			name := cm.GetDisplayName()
-			phone := extractPhoneFromVCard(cm.GetVcard())
-			switch {
-			case name != "" && phone != "":
-				return fmt.Sprintf("Contact: %s (%s)", name, phone)
-			case name != "":
-				return "Contact: " + name
-			case phone != "":
-				return "Contact: " + phone
-			}
+		if name, phone, ok := extractContactDetails(contact); ok {
+			return utils.FormatContactSummary(name, phone, false)
 		}
 		return "Contact shared"
+	}
+
+	if contactsArray, ok := data["contacts_array"]; ok && contactsArray != nil {
+		switch contacts := contactsArray.(type) {
+		case []webhookContactPayload:
+			return structuredContactsArraySummary(contacts)
+		case []*webhookContactPayload:
+			normalized := make([]webhookContactPayload, 0, len(contacts))
+			for _, contact := range contacts {
+				if contact != nil {
+					normalized = append(normalized, *contact)
+				}
+			}
+			return structuredContactsArraySummary(normalized)
+		case []any:
+			if len(contacts) == 0 {
+				return "Contacts shared"
+			}
+			if name, phone, ok := extractContactDetails(contacts[0]); ok {
+				return utils.FormatContactSummary(name, phone, true)
+			}
+			return "Contacts shared"
+		default:
+			return "Contacts shared"
+		}
 	}
 
 	if location, ok := data["location"]; ok && location != nil {
@@ -294,16 +351,48 @@ func extractStructuredMessageContent(data map[string]interface{}) string {
 	return ""
 }
 
-func extractPhoneFromVCard(vcard string) string {
-	for _, line := range strings.Split(vcard, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(strings.ToUpper(line), "TEL") {
-			if idx := strings.LastIndex(line, ":"); idx >= 0 {
-				return strings.TrimSpace(line[idx+1:])
+func extractContactDetails(contact any) (name string, phone string, ok bool) {
+	switch c := contact.(type) {
+	case webhookContactPayload:
+		return c.DisplayName, c.PhoneNumber, true
+	case *webhookContactPayload:
+		if c == nil {
+			return "", "", false
+		}
+		return c.DisplayName, c.PhoneNumber, true
+	case map[string]any:
+		if v, ok := c["displayName"].(string); ok {
+			name = v
+		} else if v, ok := c["display_name"].(string); ok {
+			name = v
+		}
+		if v, ok := c["phone_number"].(string); ok {
+			phone = v
+		}
+		if phone == "" {
+			if v, ok := c["vcard"].(string); ok {
+				phone = utils.ExtractPhoneFromVCard(v)
 			}
 		}
+		return name, phone, name != "" || phone != ""
+	case interface {
+		GetDisplayName() string
+		GetVcard() string
+	}:
+		name = c.GetDisplayName()
+		phone = utils.ExtractPhoneFromVCard(c.GetVcard())
+		return name, phone, true
+	default:
+		return "", "", false
 	}
-	return ""
+}
+
+func structuredContactsArraySummary(contacts []webhookContactPayload) string {
+	if len(contacts) == 0 {
+		return "Contacts shared"
+	}
+	first := contacts[0]
+	return utils.FormatContactSummary(first.DisplayName, first.PhoneNumber, true)
 }
 
 // syncMessageToChatwoot creates or finds contact/conversation and sends the message.
@@ -341,15 +430,15 @@ func syncMessageToChatwoot(cw *chatwoot.Client, info *chatwootContactInfo, conte
 	return nil
 }
 
-func forwardToChatwoot(ctx context.Context, payload map[string]any) {
-	logrus.Info("Chatwoot: Attempting to forward message...")
+func forwardToChatwoot(ctx context.Context, payload map[string]any, eventName string) {
+	logrus.Infof("Chatwoot: Attempting to forward %s...", eventName)
 	cw := chatwoot.GetDefaultClient()
 	if !cw.IsConfigured() {
 		logrus.Warn("Chatwoot: Client is not configured (check CHATWOOT_* env vars)")
 		return
 	}
 
-	data, ok := payload["payload"].(map[string]interface{})
+	data, ok := payload["payload"].(map[string]any)
 	if !ok {
 		logrus.Error("Chatwoot: Invalid payload format (missing 'payload' object)")
 		return
@@ -363,7 +452,16 @@ func forwardToChatwoot(ctx context.Context, payload map[string]any) {
 	}
 
 	// Build message content
-	content, attachments := buildChatwootMessageContent(data, info.IsGroup, info.FromName)
+	var (
+		content     string
+		attachments []string
+	)
+	switch eventName {
+	case "message.reaction":
+		content = buildReactionChatwootContent(data, info.IsGroup, info.FromName)
+	default:
+		content, attachments = buildChatwootMessageContent(data, info.IsGroup, info.FromName)
+	}
 	info.IsFromMe = chatwootMessageTypeFromPayload(data) == "outgoing"
 
 	// Sync to Chatwoot
@@ -380,21 +478,6 @@ func isEventWhitelisted(eventName string) bool {
 		}
 	}
 	return false
-}
-
-// ForwardConnectionEvent sends a connection lifecycle event to all configured webhooks.
-// It runs asynchronously in a goroutine. Exported for use by the usecase layer.
-func ForwardConnectionEvent(payload map[string]any, eventName string) {
-	if len(config.WhatsappWebhook) == 0 {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := forwardPayloadToConfiguredWebhooks(ctx, payload, eventName); err != nil {
-			logrus.Errorf("Failed to forward %s event to webhook: %v", eventName, err)
-		}
-	}()
 }
 
 // getGroupName fetches the group name from WhatsApp using the group JID.
@@ -443,4 +526,19 @@ func getGroupName(ctx context.Context, groupJID string) string {
 
 	logrus.Debug("Chatwoot: GroupInfo is nil or Name is empty")
 	return ""
+}
+
+// ForwardConnectionEvent sends a connection lifecycle event to all configured webhooks.
+// It runs asynchronously in a goroutine. Exported for use by the usecase layer.
+func ForwardConnectionEvent(payload map[string]any, eventName string) {
+	if len(config.WhatsappWebhook) == 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := forwardPayloadToConfiguredWebhooks(ctx, payload, eventName); err != nil {
+			logrus.Errorf("Failed to forward %s event to webhook: %v", eventName, err)
+		}
+	}()
 }

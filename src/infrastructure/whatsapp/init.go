@@ -102,12 +102,7 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 		innerStore := sqlstore.NewSQLStore(keysStoreContainer, *device.ID)
 
 		syncKeysDevice(ctx, primaryDB, keysContainer)
-		device.Identities = innerStore
-		device.Sessions = innerStore
-		device.PreKeys = innerStore
-		device.SenderKeys = innerStore
-		device.MsgSecrets = innerStore
-		device.PrivacyTokens = innerStore
+		applyKeyCacheStore(device, innerStore)
 	}
 
 	instanceID := ""
@@ -129,7 +124,7 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 	instance := NewDeviceInstance(instanceID, client, deviceRepo)
 	instance.SetFingerprint(fp.String())
 
-	client.AddEventHandler(func(rawEvt interface{}) {
+	client.AddEventHandler(func(rawEvt any) {
 		handler(ctx, instance, rawEvt)
 	})
 

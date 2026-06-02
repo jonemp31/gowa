@@ -1,7 +1,7 @@
 openapi: "3.0.0"
 info:
   title: WhatsApp API MultiDevice
-  version: 8.2.0
+  version: 8.3.1
   description: |
     This API is used for sending whatsapp via API.
 
@@ -1142,6 +1142,10 @@ paths:
                   type: boolean
                   example: false
                   description: Compress video
+                gif_playback:
+                  type: boolean
+                  example: false
+                  description: Display video as GIF (looping, silent, autoplay)
                 duration:
                   type: integer
                   example: 3600
@@ -1487,6 +1491,12 @@ paths:
       tags:
         - message
       summary: Revoke Message
+      description: |
+        Revoke (delete for everyone) a message. Revokes the bot's own message by default.
+        If the target message was sent by another user and is present in chat storage,
+        the original sender is resolved automatically so a group-admin bot can revoke
+        other members' messages (anti-spam use case). The WhatsApp server rejects the
+        request if the bot is not a group admin.
       parameters:
         - $ref: '#/components/parameters/DeviceIdHeader'
         - in: path
@@ -1910,6 +1920,11 @@ paths:
             type: boolean
             default: false
           description: Filter chats that contain media messages
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+          description: Filter by archived status. true = archived only, false = non-archived only. Omit to return all chats.
       responses:
         '200':
           description: OK
@@ -3379,6 +3394,108 @@ components:
               type: string
               example: Success update group photo
 
+    UserMyGroupItem:
+      type: object
+      description: |
+        One joined group as serialized `whatsmeow/types.GroupInfo`. Embedded structs are flattened; field names stay PascalCase (Go default JSON).
+      properties:
+        JID:
+          type: string
+          example: "120363416355796813@g.us"
+        OwnerJID:
+          type: string
+        OwnerPN:
+          type: string
+        Name:
+          type: string
+        NameSetAt:
+          type: string
+          format: date-time
+        NameSetBy:
+          type: string
+        NameSetByPN:
+          type: string
+        GroupCreated:
+          type: string
+          format: date-time
+        CreatorCountryCode:
+          type: string
+        ParticipantVersionID:
+          type: string
+        ParticipantCount:
+          type: integer
+        Participants:
+          type: array
+          items:
+            $ref: '#/components/schemas/JoinedGroupParticipant'
+        MemberAddMode:
+          type: string
+          example: "admin_add"
+        Suspended:
+          type: boolean
+        AddressingMode:
+          type: string
+        IsLocked:
+          type: boolean
+        IsAnnounce:
+          type: boolean
+        AnnounceVersionID:
+          type: string
+        IsEphemeral:
+          type: boolean
+        DisappearingTimer:
+          type: integer
+        IsIncognito:
+          type: boolean
+        IsJoinApprovalRequired:
+          type: boolean
+        DefaultMembershipApprovalMode:
+          type: string
+        IsParent:
+          type: boolean
+        LinkedParentJID:
+          type: string
+        IsDefaultSubGroup:
+          type: boolean
+        Topic:
+          type: string
+        TopicID:
+          type: string
+        TopicDeleted:
+          type: boolean
+        TopicSetAt:
+          type: string
+          format: date-time
+        TopicSetBy:
+          type: string
+        TopicSetByPN:
+          type: string
+
+    JoinedGroupParticipant:
+      type: object
+      description: Serialized `whatsmeow/types.GroupParticipant` in joined-group list payloads.
+      properties:
+        JID:
+          type: string
+          description: Primary ID for the member (often `@lid`).
+        PhoneNumber:
+          type: string
+          description: User JID string when known (e.g. `628...@s.whatsapp.net`); may be empty in edge cases.
+        LID:
+          type: string
+        IsAdmin:
+          type: boolean
+        IsSuperAdmin:
+          type: boolean
+        DisplayName:
+          type: string
+          description: Set for some anonymous / announcement cases; often empty.
+        Error:
+          type: integer
+        AddRequest:
+          type: object
+          nullable: true
+
     UserGroupResponse:
       type: object
       properties:
@@ -3394,35 +3511,7 @@ components:
             data:
               type: array
               items:
-                type: object
-                properties:
-                  JID:
-                    type: string
-                  OwnerJID:
-                    type: string
-                  Name:
-                    type: string
-                  NameSetAt:
-                    type: string
-                  NameSetBy:
-                    type: string
-                  GroupCreated:
-                    type: string
-                  ParticipantVersionID:
-                    type: string
-                  Participants:
-                    type: array
-                    items:
-                      properties:
-                        JID:
-                          type: string
-                        IsAdmin:
-                          type: boolean
-                        IsSuperAdmin:
-                          type: boolean
-                        Error:
-                          type: number
-
+                $ref: '#/components/schemas/UserMyGroupItem'
 
     UserInfoResponse:
       type: object
@@ -3894,130 +3983,30 @@ components:
         name:
           type: string
           example: "Aldino Kemal"
-    GroupResponse:
-      type: object
-      properties:
-        code:
-          type: string
-          example: "SUCCESS"
-        message:
-          type: string
-          example: "Success get list groups"
-        results:
-          type: object
-          properties:
-            data:
-              type: array
-              items:
-                $ref: '#/components/schemas/Group'
-    Group:
-      type: object
-      properties:
-        JID:
-          type: string
-          example: "120363347168689807@g.us"
-        OwnerJID:
-          type: string
-          example: "6288228744537@s.whatsapp.net"
-        Name:
-          type: string
-          example: "Example Group"
-        NameSetAt:
-          type: string
-          format: date-time
-          example: "2024-10-11T21:27:29+07:00"
-        NameSetBy:
-          type: string
-          example: "6288228744537@s.whatsapp.net"
-        Topic:
-          type: string
-          example: ""
-        TopicID:
-          type: string
-          example: ""
-        TopicSetAt:
-          type: string
-          format: date-time
-          example: "0001-01-01T00:00:00Z"
-        TopicSetBy:
-          type: string
-          example: ""
-        TopicDeleted:
-          type: boolean
-          example: false
-        IsLocked:
-          type: boolean
-          example: false
-        IsAnnounce:
-          type: boolean
-          example: false
-        AnnounceVersionID:
-          type: string
-          example: "1728656849439709"
-        IsEphemeral:
-          type: boolean
-          example: false
-        DisappearingTimer:
-          type: integer
-          example: 0
-        IsIncognito:
-          type: boolean
-          example: false
-        IsParent:
-          type: boolean
-          example: false
-        DefaultMembershipApprovalMode:
-          type: string
-          example: ""
-        LinkedParentJID:
-          type: string
-          example: ""
-        IsDefaultSubGroup:
-          type: boolean
-          example: false
-        IsJoinApprovalRequired:
-          type: boolean
-          example: false
-        GroupCreated:
-          type: string
-          format: date-time
-          example: "2024-10-11T21:27:29+07:00"
-        ParticipantVersionID:
-          type: string
-          example: "1728656849439790"
-        Participants:
-          type: array
-          items:
-            $ref: '#/components/schemas/Participant'
-        MemberAddMode:
-          type: string
-          example: "admin_add"
 
-    Participant:
+
+    GroupParticipantRequestItem:
       type: object
       properties:
-        JID:
+        jid:
           type: string
-          example: "6288228744537@s.whatsapp.net"
-        LID:
+          description: Requester's JID; often `@lid` until a phone mapping exists locally.
+          example: "84198740205822@lid"
+        phone_number:
           type: string
-          example: "20036609675500@lid"
-        IsAdmin:
-          type: boolean
-          example: true
-        IsSuperAdmin:
-          type: boolean
-          example: true
-        DisplayName:
+          description: |
+            Digits from the resolved `@s.whatsapp.net` JID when LID→PN mapping is available.
+            Empty when only `@lid` is known — the LID user part is not a phone number and must not be shown here.
+          example: "6289685024091"
+        display_name:
           type: string
-          example: ""
-        Error:
-          type: integer
-          example: 0
-        AddRequest:
+          description: From saved contact, verified business name, or WhatsApp-supplied display (may be omitted when empty).
+          example: "John Doe"
+        requested_at:
           type: string
-          example: null
-    
+          format: date-time
+          example: "2026-03-27T23:18:47Z"
+
     GroupParticipantRequestListResponse:
       type: object
       properties:
@@ -4028,26 +4017,10 @@ components:
           type: string
           example: "Success getting list requested participants"
         results:
-          type: object
-          properties:
-            data:
-              type: array
-              items:
-                type: object
-                properties:
-                  jid:
-                    type: string
-                    example: "6289685024091@s.whatsapp.net"
-                  phone_number:
-                    type: string
-                    example: "6289685024091"
-                  display_name:
-                    type: string
-                    example: "John Doe"
-                  requested_at:
-                    type: string
-                    format: date-time
-                    example: "2024-10-11T21:27:29+07:00"
+          type: array
+          description: Pending join requests for the group (not wrapped in `data`).
+          items:
+            $ref: '#/components/schemas/GroupParticipantRequestItem'
     UserCheckResponse:
       type: object
       properties:
@@ -4187,6 +4160,10 @@ components:
           format: date-time
           example: '2024-01-15T10:30:00Z'
           description: Chat last update timestamp
+        archived:
+          type: boolean
+          example: false
+          description: Whether the chat is archived
 
     ChatMessagesResponse:
       type: object
@@ -4251,7 +4228,16 @@ components:
           type: string
           example: 'image'
           nullable: true
-          description: Type of media (image, video, audio, document, etc.)
+          description: Type of media (image, video, audio, document, etc.). Value `call` indicates a stored incoming call log.
+        reactions:
+          type: array
+          description: Emoji reactions attached to this message
+          items:
+            $ref: '#/components/schemas/ChatReaction'
+        call_metadata:
+          type: string
+          example: '{"call_id":"ABC","auto_rejected":false}'
+          description: JSON string with call details when media_type is `call`. Omitted when not applicable (matches Go json omitempty).
         filename:
           type: string
           example: 'photo.jpg'
@@ -4277,6 +4263,27 @@ components:
           format: date-time
           example: '2024-01-15T10:30:00Z'
           description: Record last update timestamp
+
+    ChatReaction:
+      type: object
+      properties:
+        emoji:
+          type: string
+          example: '👍'
+          description: Emoji used in the reaction
+        sender_jid:
+          type: string
+          example: '628123456789@s.whatsapp.net'
+          description: JID of the user who reacted
+        is_from_me:
+          type: boolean
+          example: false
+          description: Whether the reaction was made by the current user
+        timestamp:
+          type: string
+          format: date-time
+          example: '2024-01-15T10:31:00Z'
+          description: When the reaction was received
 
     LabelChatResponse:
       type: object
@@ -4400,22 +4407,7 @@ components:
           type: object
           description: Group information object (structure may vary)
           additionalProperties: true
-    UserGroupInfoResponse:
-      type: object
-      properties:
-        status:
-          type: integer
-          example: 200
-        code:
-          type: string
-          example: SUCCESS
-        message:
-          type: string
-          example: Success get group info
-        results:
-          type: object
-          description: Group information object (structure may vary)
-          additionalProperties: true
+
     GetGroupInviteLinkResponse:
       type: object
       properties:

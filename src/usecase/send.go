@@ -51,11 +51,14 @@ func NewSendService(appService app.IAppUsecase, chatStorageRepo domainChatStorag
 	}
 }
 
-// wrapSendMessage wraps the message sending process with message ID saving
+// wrapSendMessage sends the message and stores it asynchronously on success.
+// The send goes through whatsapp.SendMessageWithReachoutRetry, which retries
+// once on WhatsApp error 463 after a SubscribePresence pre-warm — see
+// infrastructure/whatsapp/send_retry.go for the protocol-level rationale.
 func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeow.Client, recipient types.JID, msg *waE2E.Message, content string) (whatsmeow.SendResponse, error) {
-	ts, err := client.SendMessage(ctx, recipient, msg)
+	ts, err := whatsapp.SendMessageWithReachoutRetry(ctx, client, recipient, msg)
 	if err != nil {
-		return whatsmeow.SendResponse{}, err
+		return whatsmeow.SendResponse{}, normalizeSendError(err)
 	}
 
 	// Store the sent message using chatstorage
@@ -64,13 +67,13 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 		senderJID = client.Store.ID.String()
 	}
 
-	// Store message asynchronously with timeout
-	// Use a goroutine to avoid blocking the send operation
+	// Store message asynchronously with timeout.
+	// Preserve device context (for device_id scoping) but detach from request cancellation.
 	go func() {
-		storeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 		defer cancel()
 
-		if err := service.chatStorageRepo.StoreSentMessageWithContext(storeCtx, ts.ID, senderJID, recipient.String(), content, ts.Timestamp); err != nil {
+		if err := service.chatStorageRepo.StoreSentMessageWithContext(storeCtx, ts.ID, senderJID, recipient.String(), content, ts.Timestamp, msg); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				logrus.Warn("Timeout storing sent message")
 			} else {
@@ -94,6 +97,16 @@ func (service serviceSend) simulateChatPresence(ctx context.Context, client *wha
 	case <-ctx.Done():
 	}
 	_ = client.SendChatPresence(ctx, recipient, types.ChatPresencePaused, presenceMedia)
+}
+
+func normalizeSendError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if whatsapp.IsReachoutTimelockError(err) {
+		return pkgError.ErrWaReachoutTimelock
+	}
+	return err
 }
 
 func (service serviceSend) SendText(ctx context.Context, request domainSend.MessageRequest) (response domainSend.GenericResponse, err error) {
@@ -368,7 +381,7 @@ func (service serviceSend) SendImage(ctx context.Context, request domainSend.Ima
 
 	caption := "🖼️ Image"
 	if request.Caption != "" {
-		caption = "🖼️ " + request.Caption
+		caption = request.Caption
 	}
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, caption)
 	if err != nil {
@@ -413,6 +426,9 @@ func (service serviceSend) SendFile(ctx context.Context, request domainSend.File
 
 	fileMimeType := resolveDocumentMIME(fileName, fileBytes)
 
+	// Generate thumbnail for document preview (best-effort, non-fatal on failure)
+	thumbnailBytes := generateDocumentThumbnail(fileBytes, fileName, fileMimeType)
+
 	// Send to WA server
 	uploadedFile, err := service.uploadMedia(ctx, client, whatsmeow.MediaDocument, fileBytes, dataWaRecipient)
 	if err != nil {
@@ -431,6 +447,7 @@ func (service serviceSend) SendFile(ctx context.Context, request domainSend.File
 		FileEncSHA256: uploadedFile.FileEncSHA256,
 		DirectPath:    proto.String(uploadedFile.DirectPath),
 		Caption:       proto.String(request.Caption),
+		JPEGThumbnail: thumbnailBytes,
 	}}
 
 	if request.BaseRequest.IsForwarded {
@@ -448,8 +465,11 @@ func (service serviceSend) SendFile(ctx context.Context, request domainSend.File
 	}
 
 	caption := "📄 Document"
+	if fileName != "" {
+		caption = "📄 " + fileName
+	}
 	if request.Caption != "" {
-		caption = "📄 " + request.Caption
+		caption = request.Caption
 	}
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, caption)
 	if err != nil {
@@ -459,6 +479,112 @@ func (service serviceSend) SendFile(ctx context.Context, request domainSend.File
 	response.MessageID = ts.ID
 	response.Status = fmt.Sprintf("Document sent to %s (server timestamp: %s)", request.BaseRequest.Phone, ts.Timestamp.String())
 	return response, nil
+}
+
+// generateDocumentThumbnail creates a JPEG thumbnail for document preview in WhatsApp.
+// Supports PDF (via ImageMagick convert or pdftoppm) and image files sent as documents.
+// Returns nil if thumbnail generation fails (non-fatal).
+func generateDocumentThumbnail(fileBytes []byte, fileName string, mimeType string) []byte {
+	generateUUID := fiberUtils.UUIDv4()
+	ext := strings.ToLower(filepath.Ext(fileName))
+
+	switch {
+	case mimeType == "application/pdf" || ext == ".pdf":
+		return generatePDFThumbnail(fileBytes, generateUUID)
+	case strings.HasPrefix(mimeType, "image/"):
+		return generateImageDocThumbnail(fileBytes, fileName, generateUUID)
+	default:
+		return nil
+	}
+}
+
+// generatePDFThumbnail renders the first page of a PDF as a JPEG thumbnail.
+// Tries pdftoppm first (from poppler-utils), falls back to ImageMagick convert.
+func generatePDFThumbnail(pdfBytes []byte, uuid string) []byte {
+	tempPDF := fmt.Sprintf("%s/thumb_%s.pdf", config.PathSendItems, uuid)
+	tempPNG := fmt.Sprintf("%s/thumb_%s.png", config.PathSendItems, uuid)
+	thumbPath := fmt.Sprintf("%s/thumb_%s_thumb.jpg", config.PathSendItems, uuid)
+
+	defer func() {
+		_ = utils.RemoveFile(0, tempPDF, tempPNG, thumbPath)
+		// pdftoppm outputs with suffix, clean that too
+		pdftoppmOut := fmt.Sprintf("%s/thumb_%s-1.png", config.PathSendItems, uuid)
+		_ = utils.RemoveFile(0, pdftoppmOut)
+	}()
+
+	if err := os.WriteFile(tempPDF, pdfBytes, 0644); err != nil {
+		return nil
+	}
+
+	// Try pdftoppm first (poppler-utils) — widely available, no Ghostscript needed
+	pngGenerated := false
+	pdftoppmOut := fmt.Sprintf("%s/thumb_%s", config.PathSendItems, uuid)
+	cmdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, "pdftoppm", "-png", "-f", "1", "-l", "1", "-r", "150", "-singlefile", tempPDF, pdftoppmOut)
+	if err := cmd.Run(); err == nil {
+		// pdftoppm with -singlefile outputs to {prefix}.png
+		actualOut := pdftoppmOut + ".png"
+		if _, statErr := os.Stat(actualOut); statErr == nil {
+			_ = os.Rename(actualOut, tempPNG)
+			pngGenerated = true
+		}
+	}
+
+	// Fallback to ImageMagick convert
+	if !pngGenerated {
+		cmd = exec.CommandContext(cmdCtx, "convert", tempPDF+"[0]", "-resize", "300x", "-quality", "85", tempPNG)
+		if err := cmd.Run(); err != nil {
+			return nil
+		}
+	}
+
+	// Resize to thumbnail
+	srcImage, err := imaging.Open(tempPNG)
+	if err != nil {
+		return nil
+	}
+	resized := imaging.Resize(srcImage, 100, 0, imaging.Lanczos)
+	if err = imaging.Save(resized, thumbPath); err != nil {
+		return nil
+	}
+
+	thumbBytes, err := os.ReadFile(thumbPath)
+	if err != nil {
+		return nil
+	}
+	return thumbBytes
+}
+
+// generateImageDocThumbnail creates a thumbnail for image files sent as documents.
+func generateImageDocThumbnail(imageBytes []byte, fileName string, uuid string) []byte {
+	safeFileName := filepath.Base(fileName)
+	tempPath := fmt.Sprintf("%s/docimg_%s_%s", config.PathSendItems, uuid, safeFileName)
+	thumbPath := fmt.Sprintf("%s/docimg_%s_thumb.jpg", config.PathSendItems, uuid)
+
+	defer func() {
+		_ = utils.RemoveFile(0, tempPath, thumbPath)
+	}()
+
+	if err := os.WriteFile(tempPath, imageBytes, 0644); err != nil {
+		return nil
+	}
+
+	srcImage, err := imaging.Open(tempPath)
+	if err != nil {
+		return nil
+	}
+
+	resized := imaging.Resize(srcImage, 100, 0, imaging.Lanczos)
+	if err = imaging.Save(resized, thumbPath); err != nil {
+		return nil
+	}
+
+	thumbBytes, err := os.ReadFile(thumbPath)
+	if err != nil {
+		return nil
+	}
+	return thumbBytes
 }
 
 func resolveDocumentMIME(filename string, fileBytes []byte) string {
@@ -776,6 +902,7 @@ func (service serviceSend) SendVideo(ctx context.Context, request domainSend.Vid
 		MediaKey:            uploaded.MediaKey,
 		DirectPath:          proto.String(uploaded.DirectPath),
 		ViewOnce:            proto.Bool(request.ViewOnce),
+		GifPlayback:         proto.Bool(request.GifPlayback),
 		JPEGThumbnail:       dataWaThumbnail,
 		ThumbnailEncSHA256:  dataWaThumbnail,
 		ThumbnailSHA256:     dataWaThumbnail,
@@ -826,10 +953,12 @@ func (service serviceSend) SendContact(ctx context.Context, request domainSend.C
 		return response, err
 	}
 
+	contactName := strings.TrimSpace(request.ContactName)
+	contactPhone := utils.CleanPhoneForWhatsApp(request.ContactPhone)
 	msgVCard := fmt.Sprintf("BEGIN:VCARD\nVERSION:3.0\nN:;%v;;;\nFN:%v\nTEL;type=CELL;waid=%v:+%v\nEND:VCARD",
-		request.ContactName, request.ContactName, request.ContactPhone, request.ContactPhone)
+		contactName, contactName, contactPhone, contactPhone)
 	msg := &waE2E.Message{ContactMessage: &waE2E.ContactMessage{
-		DisplayName: proto.String(request.ContactName),
+		DisplayName: proto.String(contactName),
 		Vcard:       proto.String(msgVCard),
 	}}
 
@@ -847,7 +976,10 @@ func (service serviceSend) SendContact(ctx context.Context, request domainSend.C
 		msg.ContactMessage.ContextInfo.Expiration = proto.Uint32(uint32(*request.BaseRequest.Duration))
 	}
 
-	content := "👤 " + request.ContactName
+	content := "👤 " + contactName
+	if contactPhone != "" {
+		content = fmt.Sprintf("👤 %s (+%s)", contactName, contactPhone)
+	}
 
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, content)
 	if err != nil {
@@ -911,18 +1043,21 @@ func (service serviceSend) SendLink(ctx context.Context, request domainSend.Link
 	}
 
 	// If we have a thumbnail image, upload it to WhatsApp's servers
-	if len(metadata.JPEGThumb) > 0 && metadata.Height != nil && metadata.Width != nil {
-		uploadedThumb, err := service.uploadMedia(ctx, client, whatsmeow.MediaLinkThumbnail, metadata.JPEGThumb, dataWaRecipient)
+	if len(metadata.ImageThumb) > 0 {
+		uploadedThumb, err := service.uploadMedia(ctx, client, whatsmeow.MediaLinkThumbnail, metadata.ImageThumb, dataWaRecipient)
 		if err == nil {
 			// Update the message with the uploaded thumbnail information
-			mediaKeyTimestamp := time.Now().Unix()
 			msg.ExtendedTextMessage.ThumbnailDirectPath = proto.String(uploadedThumb.DirectPath)
 			msg.ExtendedTextMessage.ThumbnailSHA256 = uploadedThumb.FileSHA256
 			msg.ExtendedTextMessage.ThumbnailEncSHA256 = uploadedThumb.FileEncSHA256
 			msg.ExtendedTextMessage.MediaKey = uploadedThumb.MediaKey
-			msg.ExtendedTextMessage.MediaKeyTimestamp = proto.Int64(mediaKeyTimestamp)
-			msg.ExtendedTextMessage.ThumbnailHeight = metadata.Height
-			msg.ExtendedTextMessage.ThumbnailWidth = metadata.Width
+			msg.ExtendedTextMessage.MediaKeyTimestamp = proto.Int64(time.Now().Unix())
+			if metadata.Height != nil {
+				msg.ExtendedTextMessage.ThumbnailHeight = metadata.Height
+			}
+			if metadata.Width != nil {
+				msg.ExtendedTextMessage.ThumbnailWidth = metadata.Width
+			}
 		} else {
 			logrus.Warnf("Failed to upload thumbnail: %v, continue without uploaded thumbnail", err)
 		}

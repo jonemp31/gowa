@@ -357,8 +357,5 @@ func PerformCleanupAndUpdateGlobals(ctx context.Context, logPrefix string, chatS
 		return nil, nil, err
 	}
 
-	// Ensure global client is properly synchronized
-	UpdateGlobalClient(newCli, newDB)
-
 	return newDB, newCli, nil
 }

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/jonat/go/pkg/mod/go.mau.fi/**)",
+      "Bash(cmd.exe /c \"dir /b C:\\\\Users\\\\jonat\\\\go\\\\pkg\\\\mod\\\\go.mau.fi\\\\whatsmeow@v0.0.0-20260416104156-3ff20cd3462a\\\\\" 2>&1 | head -30)",
+      "Bash(go env *)",
+      "Bash(docker pull *)",
+      "Bash(docker buildx *)",
+      "Bash(go build *)",
+      "Bash(git tag *)",
+      "Bash(git push *)"
+    ]
+  }
+}
