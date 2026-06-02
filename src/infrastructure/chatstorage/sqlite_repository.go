@@ -1602,7 +1602,8 @@ func (r *SQLiteRepository) InitializeSchema() error {
 		return err
 	}
 
-	// Run migrations based on version
+	// Run migrations based on version. runMigration is idempotent for ADD COLUMN /
+	// CREATE INDEX so upstream renumbering cannot leave the database broken.
 	migrations := r.getMigrations()
 	for i := version; i < len(migrations); i++ {
 		if err := r.runMigration(migrations[i], i+1); err != nil {
@@ -1610,6 +1611,33 @@ func (r *SQLiteRepository) InitializeSchema() error {
 		}
 	}
 
+	// Belt-and-suspenders: ensure critical columns that may have been skipped due
+	// to upstream migration renumbering are always present regardless of version.
+	if err := r.ensureCriticalColumns(); err != nil {
+		logrus.Warnf("[MIGRATION] ensureCriticalColumns warning: %v", err)
+	}
+
+	return nil
+}
+
+// ensureCriticalColumns adds any columns that are required by the current
+// codebase but may be absent because they were introduced via a migration that
+// was skipped when the upstream renumbered the migration list.
+// All statements here are intentionally idempotent — errors caused by an
+// already-existing column or index are silently ignored.
+func (r *SQLiteRepository) ensureCriticalColumns() error {
+	critical := []string{
+		`ALTER TABLE chats ADD COLUMN archived BOOLEAN DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_chats_archived ON chats(archived)`,
+		`ALTER TABLE chats ADD COLUMN metadata TEXT DEFAULT NULL`,
+		`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`,
+		`ALTER TABLE messages ADD COLUMN edit_count INTEGER DEFAULT 0`,
+	}
+	for _, stmt := range critical {
+		if _, err := r.db.Exec(stmt); err != nil && !isMigrationAlreadyApplied(err) {
+			return fmt.Errorf("stmt %q: %w", stmt, err)
+		}
+	}
 	return nil
 }
 
@@ -1636,7 +1664,28 @@ func (r *SQLiteRepository) getSchemaVersion() (int, error) {
 	return version, nil
 }
 
-// runMigration executes a migration
+// isMigrationAlreadyApplied reports whether a migration error means the schema
+// change is already present in the database. This happens when upstream updates
+// renumber migrations, causing an existing database to skip middle-inserted
+// migrations (e.g. ALTER TABLE ADD COLUMN that was already applied manually or
+// by a previous migration with a different number).
+//
+// Recognised patterns:
+//   - SQLite: "already has a column named X", "already exists"
+//   - PostgreSQL: "already exists", "duplicate column"
+func isMigrationAlreadyApplied(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already has a column named") ||
+		strings.Contains(msg, "duplicate column") ||
+		strings.Contains(msg, "already exists")
+}
+
+// runMigration executes a migration. Errors that indicate the schema change is
+// already present (e.g. duplicate column / index) are treated as success so
+// that upstream migration renumbering does not leave databases in a broken state.
 func (r *SQLiteRepository) runMigration(migration string, version int) error {
 	tx, err := r.db.Begin()
 	if err != nil {
@@ -1644,9 +1693,13 @@ func (r *SQLiteRepository) runMigration(migration string, version int) error {
 	}
 	defer tx.Rollback()
 
-	// Execute migration (single statement)
+	// Execute migration. If the change is already present, log and continue —
+	// the version is still recorded so future migrations are not blocked.
 	if _, err := tx.Exec(migration); err != nil {
-		return err
+		if !isMigrationAlreadyApplied(err) {
+			return err
+		}
+		logrus.Warnf("[MIGRATION] migration %d already applied (skipped): %v", version, err)
 	}
 
 	// Update schema version - delete then insert for cross-db compatibility
