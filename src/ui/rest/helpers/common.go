@@ -4,6 +4,7 @@ import (
 	"context"
 	"math/rand"
 	"mime/multipart"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,7 +58,18 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 				isConnected, _, _ := service.Status(context.Background(), device.Device)
 				if !isConnected {
 					if err := service.Reconnect(context.Background(), device.Device); err != nil {
-						logrus.Warnf("[AUTO-RECONNECT] failed for device %s: %v", device.Device, err)
+						// Session deleted means the user revoked access from their phone.
+						// The device can never reconnect — purge it so it stops generating
+						// reconnect noise and triggers a device_removed webhook so downstream
+						// systems (e.g. Supabase via n8n) can update their state.
+						if strings.Contains(err.Error(), "session deleted") {
+							logrus.Infof("[AUTO-RECONNECT] session deleted for device %s — removing", device.Device)
+							if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
+								logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+							}
+						} else {
+							logrus.Warnf("[AUTO-RECONNECT] failed for device %s: %v", device.Device, err)
+						}
 					} else {
 						logrus.Infof("[AUTO-RECONNECT] recovered device %s", device.Device)
 					}
