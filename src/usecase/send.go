@@ -209,7 +209,7 @@ func (service serviceSend) SendText(ctx context.Context, request domainSend.Mess
 		}
 	}
 
-	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaText, 5, 14)
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaText, 3, 8)
 
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, request.Message)
 	if err != nil {
@@ -383,6 +383,7 @@ func (service serviceSend) SendImage(ctx context.Context, request domainSend.Ima
 	if request.Caption != "" {
 		caption = request.Caption
 	}
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaText, 3, 5)
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, caption)
 	if err != nil {
 		return response, err
@@ -927,6 +928,7 @@ func (service serviceSend) SendVideo(ctx context.Context, request domainSend.Vid
 	if request.Caption != "" {
 		caption = "🎥 " + request.Caption
 	}
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaText, 3, 5)
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, caption)
 	if err != nil {
 		return response, err
@@ -1325,7 +1327,7 @@ func (service serviceSend) SendAudio(ctx context.Context, request domainSend.Aud
 
 	content := "🎵 Audio"
 
-	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaAudio, 6, 15)
+	service.simulateChatPresence(ctx, client, dataWaRecipient, types.ChatPresenceMediaAudio, 5, 9)
 
 	ts, err := service.wrapSendMessage(ctx, client, dataWaRecipient, msg, content)
 	if err != nil {
