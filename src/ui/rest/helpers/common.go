@@ -59,13 +59,19 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 				if !isConnected {
 					if err := service.Reconnect(context.Background(), device.Device); err != nil {
 						// Session deleted means the user revoked access from their phone.
-						// The device can never reconnect — purge it so it stops generating
-						// reconnect noise and triggers a device_removed webhook so downstream
-						// systems (e.g. Supabase via n8n) can update their state.
+						// Only purge if the device is older than 2 hours — this protects
+						// newly created devices that are still waiting for a QR scan.
 						if strings.Contains(err.Error(), "session deleted") {
-							logrus.Infof("[AUTO-RECONNECT] session deleted for device %s — removing", device.Device)
-							if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
-								logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+							age := time.Since(device.CreatedAt)
+							if age < 2*time.Hour {
+								logrus.Infof("[AUTO-RECONNECT] session deleted for device %s but created %s ago — skipping auto-purge",
+									device.Device, age.Round(time.Minute))
+							} else {
+								logrus.Infof("[AUTO-RECONNECT] session deleted for device %s (created %s ago) — removing",
+									device.Device, age.Round(time.Minute))
+								if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
+									logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+								}
 							}
 						} else {
 							logrus.Warnf("[AUTO-RECONNECT] failed for device %s: %v", device.Device, err)

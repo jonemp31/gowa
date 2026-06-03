@@ -17,8 +17,9 @@ type IAppUsecase interface {
 }
 
 type DevicesResponse struct {
-	Name   string `json:"name"`
-	Device string `json:"device"`
+	Name      string    `json:"name"`
+	Device    string    `json:"device"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type LoginResponse struct {
