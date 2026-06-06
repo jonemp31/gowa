@@ -88,18 +88,26 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 	return ts, nil
 }
 
-// simulateChatPresence sends a typing/recording indicator to the recipient for a random
-// duration before sending the actual message, simulating human-like behavior.
+// simulateChatPresence sends a typing/recording indicator to the recipient and returns
+// immediately. The "paused" state is sent after a random delay in a background goroutine,
+// so the handler is never blocked waiting for the timer to expire.
 // presenceMedia: types.ChatPresenceMediaText for typing, types.ChatPresenceMediaAudio for recording.
 // minSec/maxSec: random delay range in seconds.
 func (service serviceSend) simulateChatPresence(ctx context.Context, client *whatsmeow.Client, recipient types.JID, presenceMedia types.ChatPresenceMedia, minSec, maxSec int) {
 	delay := time.Duration(minSec+rand.Intn(maxSec-minSec+1)) * time.Second
 	_ = client.SendChatPresence(ctx, recipient, types.ChatPresenceComposing, presenceMedia)
-	select {
-	case <-time.After(delay):
-	case <-ctx.Done():
-	}
-	_ = client.SendChatPresence(ctx, recipient, types.ChatPresencePaused, presenceMedia)
+	// Send "paused" after the delay without blocking the caller. Use a detached
+	// context so request cancellation does not abort the trailing presence update.
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-detached.Done():
+		}
+		_ = client.SendChatPresence(detached, recipient, types.ChatPresencePaused, presenceMedia)
+	}()
 }
 
 func normalizeSendError(err error) error {

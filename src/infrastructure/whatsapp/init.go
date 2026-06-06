@@ -30,30 +30,62 @@ var (
 	startupTime   = time.Now().Unix()
 )
 
-func syncKeysDevice(ctx context.Context, db, keysDB *sqlstore.Container) {
+// syncKeysDevice ensures the keysDB contains exactly the same set of devices as the
+// primary DB. The original implementation used GetFirstDevice and deleted everything
+// else, which silently wiped session keys for all but the first device in multi-device
+// setups. This version does a full bidirectional sync:
+//   - devices in keysDB not found in primary → deleted (orphans)
+//   - devices in primary not found in keysDB → added (missing keys store entries)
+func syncKeysDevice(ctx context.Context, primaryDB, keysDB *sqlstore.Container) {
 	if keysDB == nil {
 		return
 	}
 
-	dev, err := db.GetFirstDevice(ctx)
+	primaryDevices, err := primaryDB.GetAllDevices(ctx)
 	if err != nil {
-		log.Errorf("Failed to get all devices: %v", err)
-	} else {
-		found := false
-		if devs, err := keysDB.GetAllDevices(ctx); err != nil {
-			log.Errorf("Failed to get all devices: %v", err)
-		} else {
-			for _, d := range devs {
-				if d.ID == dev.ID {
-					found = true
-					break
-				} else {
-					keysDB.DeleteDevice(ctx, d)
-				}
-			}
+		log.Errorf("[SYNC_KEYS] failed to list devices from primary DB: %v", err)
+		return
+	}
 
-			if !found {
-				keysDB.PutDevice(ctx, dev)
+	// Build a set of IDs present in primary for O(1) lookup.
+	primaryIDs := make(map[string]struct{}, len(primaryDevices))
+	for _, d := range primaryDevices {
+		if d.ID != nil {
+			primaryIDs[d.ID.String()] = struct{}{}
+		}
+	}
+
+	// Remove from keysDB any device not present in primary.
+	keysDevices, err := keysDB.GetAllDevices(ctx)
+	if err != nil {
+		log.Errorf("[SYNC_KEYS] failed to list devices from keys DB: %v", err)
+		return
+	}
+	keysIDs := make(map[string]struct{}, len(keysDevices))
+	for _, d := range keysDevices {
+		if d.ID == nil {
+			continue
+		}
+		keysIDs[d.ID.String()] = struct{}{}
+		if _, ok := primaryIDs[d.ID.String()]; !ok {
+			if delErr := keysDB.DeleteDevice(ctx, d); delErr != nil {
+				log.Warnf("[SYNC_KEYS] failed to delete orphan device %s from keys DB: %v", d.ID, delErr)
+			} else {
+				log.Infof("[SYNC_KEYS] removed orphan device %s from keys DB", d.ID)
+			}
+		}
+	}
+
+	// Add to keysDB any device present in primary but missing from keysDB.
+	for _, d := range primaryDevices {
+		if d.ID == nil {
+			continue
+		}
+		if _, ok := keysIDs[d.ID.String()]; !ok {
+			if putErr := keysDB.PutDevice(ctx, d); putErr != nil {
+				log.Warnf("[SYNC_KEYS] failed to add device %s to keys DB: %v", d.ID, putErr)
+			} else {
+				log.Infof("[SYNC_KEYS] added missing device %s to keys DB", d.ID)
 			}
 		}
 	}

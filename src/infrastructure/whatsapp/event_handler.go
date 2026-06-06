@@ -170,10 +170,12 @@ func handleAppStateSyncComplete(_ context.Context, client *whatsmeow.Client, evt
 }
 
 func handlePairSuccess(ctx context.Context, evt *events.PairSuccess) {
-	websocket.Broadcast <- websocket.BroadcastMessage{
-		Code:    "LOGIN_SUCCESS",
-		Message: fmt.Sprintf("Successfully pair with %s", evt.ID.String()),
-	}
+	go func() {
+		websocket.Broadcast <- websocket.BroadcastMessage{
+			Code:    "LOGIN_SUCCESS",
+			Message: fmt.Sprintf("Successfully pair with %s", evt.ID.String()),
+		}
+	}()
 	primaryDB, secondaryDB := getStoreContainers()
 	syncKeysDevice(ctx, primaryDB, secondaryDB)
 
@@ -206,11 +208,13 @@ func handleLoggedOut(ctx context.Context, instance *DeviceInstance, chatStorageR
 
 	instance.TriggerLoggedOut()
 
-	websocket.Broadcast <- websocket.BroadcastMessage{
-		Code:    "LOGOUT_COMPLETE",
-		Message: "Remote logout cleanup completed - device removed from server",
-		Result:  map[string]string{"device_id": deviceID},
-	}
+	go func() {
+		websocket.Broadcast <- websocket.BroadcastMessage{
+			Code:    "LOGOUT_COMPLETE",
+			Message: "Remote logout cleanup completed - device removed from server",
+			Result:  map[string]string{"device_id": deviceID},
+		}
+	}()
 
 	if len(config.WhatsappWebhook) > 0 {
 		ForwardConnectionEvent(map[string]any{
@@ -268,11 +272,13 @@ func handleStreamReplaced(_ context.Context, instance *DeviceInstance) {
 	}
 	instance.SetState(domainDevice.DeviceStateDisconnected)
 
-	websocket.Broadcast <- websocket.BroadcastMessage{
-		Code:    "STREAM_REPLACED",
-		Message: fmt.Sprintf("Device %s disconnected - another client took over the session", deviceID),
-		Result:  map[string]string{"device_id": deviceID},
-	}
+	go func() {
+		websocket.Broadcast <- websocket.BroadcastMessage{
+			Code:    "STREAM_REPLACED",
+			Message: fmt.Sprintf("Device %s disconnected - another client took over the session", deviceID),
+			Result:  map[string]string{"device_id": deviceID},
+		}
+	}()
 
 	if len(config.WhatsappWebhook) > 0 {
 		ForwardConnectionEvent(map[string]any{

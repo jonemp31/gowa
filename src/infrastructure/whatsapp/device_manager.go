@@ -408,8 +408,12 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 			seenJIDs[rec.JID] = true
 		}
 
-		// Check if a device with this JID already exists in memory (from InitWaCLI)
-		m.mu.RLock()
+		// Check if a device with this JID already exists in memory (from InitWaCLI) and
+		// atomically remove it under a single write lock. The previous RLock+RUnlock+Lock
+		// pattern had a race window where a concurrent AddDevice (e.g. from EnsureClient
+		// during auto-connect) could insert the device between the two lock acquisitions,
+		// causing it to be silently deleted by the subsequent write-lock delete.
+		m.mu.Lock()
 		var existingByJID *DeviceInstance
 		for id, inst := range m.devices {
 			if rec.JID != "" && inst.JID() == rec.JID && id != rec.DeviceID {
@@ -417,13 +421,12 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 				break
 			}
 		}
-		m.mu.RUnlock()
-
-		// If device with matching JID exists, remove it and use the registry device
 		if existingByJID != nil {
-			m.mu.Lock()
 			delete(m.devices, existingByJID.ID())
-			m.mu.Unlock()
+		}
+		m.mu.Unlock()
+
+		if existingByJID != nil {
 			logrus.Infof("[DEVICE_MANAGER] replacing in-memory device %s with registry device %s", existingByJID.ID(), rec.DeviceID)
 		}
 

@@ -84,35 +84,61 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 
 func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 	go func() {
-		for {
-			time.Sleep(60 * time.Second)
+		// Ticker ensures a fixed 60s interval between starts regardless of how long
+		// each iteration takes — unlike time.Sleep which adds processing time on top.
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
 			devices, err := service.FetchDevices(context.Background())
 			if err != nil || len(devices) == 0 {
 				continue
 			}
+
+			// Phase 1: check all devices serially (fast — in-memory reads only).
+			// Collecting first avoids blocking Status() calls behind reconnect timeouts.
+			var toReconnect []domainApp.DevicesResponse
 			for _, device := range devices {
 				isConnected, _, _ := service.Status(context.Background(), device.Device)
-				if !isConnected {
-					if isReconnectOnCooldown(device.Device) {
-						logrus.Debugf("[AUTO-RECONNECT] device %s on cooldown, skipping", device.Device)
-						continue
-					}
-					markReconnectAttempt(device.Device)
-					if err := service.Reconnect(context.Background(), device.Device); err != nil {
+				if isConnected {
+					continue
+				}
+				if isReconnectOnCooldown(device.Device) {
+					logrus.Debugf("[AUTO-RECONNECT] device %s on cooldown, skipping", device.Device)
+					continue
+				}
+				markReconnectAttempt(device.Device)
+				toReconnect = append(toReconnect, device)
+			}
+
+			// Phase 2: reconnect in parallel, bounded to 10 concurrent workers.
+			const maxWorkers = 10
+			sem := make(chan struct{}, maxWorkers)
+			var wg sync.WaitGroup
+
+			for _, device := range toReconnect {
+				sem <- struct{}{}
+				wg.Add(1)
+
+				go func(dev domainApp.DevicesResponse) {
+					defer wg.Done()
+					defer func() { <-sem }()
+
+					if err := service.Reconnect(context.Background(), dev.Device); err != nil {
 						if strings.Contains(err.Error(), "session deleted") {
-							age := time.Since(device.CreatedAt)
-							if device.JID == "" {
+							age := time.Since(dev.CreatedAt)
+							if dev.JID == "" {
 								// No JID means this device was never logged in (no QR scan completed).
 								// Use a short grace period so a freshly created device waiting for
 								// QR scan is not immediately purged if the checker fires first.
 								if age < 30*time.Minute {
 									logrus.Infof("[AUTO-RECONNECT] device %s never logged in, created %s ago — skipping purge (grace period)",
-										device.Device, age.Round(time.Minute))
+										dev.Device, age.Round(time.Minute))
 								} else {
 									logrus.Infof("[AUTO-RECONNECT] device %s never logged in, created %s ago — purging",
-										device.Device, age.Round(time.Minute))
-									if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
-										logrus.Warnf("[AUTO-RECONNECT] failed to purge device %s: %v", device.Device, purgeErr)
+										dev.Device, age.Round(time.Minute))
+									if purgeErr := service.Logout(context.Background(), dev.Device); purgeErr != nil {
+										logrus.Warnf("[AUTO-RECONNECT] failed to purge device %s: %v", dev.Device, purgeErr)
 									}
 								}
 							} else {
@@ -121,24 +147,25 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 								// transient server-side errors.
 								if age < 2*time.Hour {
 									logrus.Infof("[AUTO-RECONNECT] session deleted for device %s but created %s ago — skipping auto-purge",
-										device.Device, age.Round(time.Minute))
+										dev.Device, age.Round(time.Minute))
 								} else {
 									logrus.Infof("[AUTO-RECONNECT] session deleted for device %s (created %s ago) — removing",
-										device.Device, age.Round(time.Minute))
-									if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
-										logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+										dev.Device, age.Round(time.Minute))
+									if purgeErr := service.Logout(context.Background(), dev.Device); purgeErr != nil {
+										logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", dev.Device, purgeErr)
 									}
 								}
 							}
 						} else {
-							logrus.Warnf("[AUTO-RECONNECT] failed for device %s: %v", device.Device, err)
+							logrus.Warnf("[AUTO-RECONNECT] failed for device %s: %v", dev.Device, err)
 						}
 					} else {
-						logrus.Infof("[AUTO-RECONNECT] recovered device %s", device.Device)
+						logrus.Infof("[AUTO-RECONNECT] recovered device %s", dev.Device)
 					}
-					time.Sleep(1000 * time.Millisecond)
-				}
+				}(device)
 			}
+
+			wg.Wait()
 		}
 	}()
 }

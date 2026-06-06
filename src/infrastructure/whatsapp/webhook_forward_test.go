@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
@@ -38,9 +39,14 @@ func TestForwardPayloadToConfiguredWebhooks_PartialFailure(t *testing.T) {
 	defer func() { config.WhatsappWebhook = originalWebhooks }()
 
 	originalSubmit := submitWebhookFn
-	var attempts []string
+	var (
+		attemptsMu sync.Mutex
+		attempts   []string
+	)
 	submitWebhookFn = func(_ context.Context, _ map[string]any, url string) error {
+		attemptsMu.Lock()
 		attempts = append(attempts, url)
+		attemptsMu.Unlock()
 		if strings.Contains(url, "fail") {
 			return errors.New("boom")
 		}

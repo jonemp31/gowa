@@ -17,6 +17,12 @@ import (
 
 var submitWebhookFn = submitWebhook
 
+// webhookSemaphore limits the number of goroutines concurrently delivering webhook
+// payloads. 500 slots accommodate deployments with up to ~200 active devices without
+// restricting throughput under normal conditions, while bounding goroutine and
+// connection accumulation when the webhook endpoint is slow or unavailable.
+var webhookSemaphore = make(chan struct{}, 500)
+
 // mutexShardCount is the number of mutex shards for contact synchronization.
 // Using a fixed array avoids memory growth from sync.Map while still providing
 // reasonable concurrency (64 shards means max 64 concurrent contact operations).
@@ -80,6 +86,17 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		return nil
 	}
 
+	// Acquire a delivery slot before proceeding. Blocks until a slot is free or ctx
+	// expires, preventing unbounded goroutine accumulation under sustained load or
+	// when the webhook endpoint is slow/unavailable.
+	select {
+	case webhookSemaphore <- struct{}{}:
+		defer func() { <-webhookSemaphore }()
+	case <-ctx.Done():
+		logrus.Warnf("[WEBHOOK] semaphore wait timed out for %s event, dropping delivery", eventName)
+		return ctx.Err()
+	}
+
 	if config.WhatsappApiName != "" {
 		payload["api_name"] = config.WhatsappApiName
 	}
@@ -106,17 +123,33 @@ func forwardToWebhooks(ctx context.Context, payload map[string]any, eventName st
 		return nil
 	}
 
+	// Dispatch all webhook URLs in parallel so a slow or failing endpoint does not
+	// delay delivery to the others. Worst-case latency drops from sum(N × timeout)
+	// to max(timeout) regardless of how many URLs are configured.
+	type result struct {
+		url string
+		err error
+	}
+	results := make(chan result, total)
+
+	for _, url := range config.WhatsappWebhook {
+		go func(u string) {
+			results <- result{url: u, err: submitWebhookFn(ctx, payload, u)}
+		}(url)
+	}
+
 	var (
 		failed    []string
 		successes int
 	)
-	for _, url := range config.WhatsappWebhook {
-		if err := submitWebhookFn(ctx, payload, url); err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", url, err))
-			logrus.Warnf("Failed forwarding %s to %s: %v", eventName, url, err)
-			continue
+	for i := 0; i < total; i++ {
+		r := <-results
+		if r.err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", r.url, r.err))
+			logrus.Warnf("Failed forwarding %s to %s: %v", eventName, r.url, r.err)
+		} else {
+			successes++
 		}
-		successes++
 	}
 
 	if len(failed) > 0 {
