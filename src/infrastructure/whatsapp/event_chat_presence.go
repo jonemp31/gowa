@@ -27,13 +27,19 @@ func handleChatPresence(ctx context.Context, evt *events.ChatPresence, deviceID 
 
 	// Forward chat presence event to webhook if configured
 	if len(config.WhatsappWebhook) > 0 {
-		go func(e *events.ChatPresence, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardChatPresenceToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward chat_presence event to webhook: %v", err)
-			}
-		}(evt, client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(e *events.ChatPresence, c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardChatPresenceToWebhook(webhookCtx, e, deviceID, c); err != nil {
+					logrus.Errorf("Failed to forward chat_presence event to webhook: %v", err)
+				}
+			}(evt, client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping chat_presence event for device %s", deviceID)
+		}
 	}
 }
 

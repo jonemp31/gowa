@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -67,7 +68,11 @@ func restServer(_ *cobra.Command, _ []string) {
 	}))
 
 	app.Use(middleware.Recovery())
-	app.Use(middleware.RequestTimeout(middleware.DefaultRequestTimeout))
+	requestTimeout := time.Duration(config.AppRequestTimeoutSeconds) * time.Second
+	if requestTimeout <= 0 {
+		requestTimeout = middleware.DefaultRequestTimeout
+	}
+	app.Use(middleware.RequestTimeout(requestTimeout))
 	app.Use(middleware.BasicAuth())
 	app.Use(logger.New(logger.Config{
 		Format:     "${time} [HTTP]  ${method} ${path} | ${status} | ${latency}\n",
@@ -81,14 +86,74 @@ func restServer(_ *cobra.Command, _ []string) {
 	// Device manager - needed for chatwoot webhook and health check
 	dm := whatsapp.GetDeviceManager()
 
-	// Health check endpoint (public, no auth)
-	// Registered at root path (ignoring AppBasePath) to ensure fixed availability
-	// for infrastructure health probes (Kubernetes liveness/readiness, Docker healthcheck, etc.)
+	// Health check endpoint — public, no auth.
+	// Registered at root (ignoring AppBasePath) so infrastructure probes (Docker
+	// healthcheck, load-balancer, Swarm) always find it at a fixed path.
+	//
+	// Status rules:
+	//   healthy   — >95 % of devices are logged_in or connected
+	//   degraded  — 80–95 % connected
+	//   unhealthy — <80 % connected  OR device manager not initialised
 	app.Get("/health", func(c *fiber.Ctx) error {
-		if dm != nil && dm.IsHealthy() {
-			return c.SendString("OK")
+		type deviceCounts struct {
+			Total        int `json:"total"`
+			LoggedIn     int `json:"logged_in"`
+			Connected    int `json:"connected"`
+			Disconnected int `json:"disconnected"`
 		}
-		return c.Status(http.StatusServiceUnavailable).SendString("Service Unavailable")
+		type healthResponse struct {
+			Status                        string       `json:"status"`
+			Devices                       deviceCounts `json:"devices"`
+			Goroutines                    int          `json:"goroutines"`
+			WebhookSemaphoreUsagePct      int          `json:"webhook_semaphore_usage_pct"`
+			WebhookDispatchSemaphoreUsage int          `json:"webhook_dispatch_semaphore_usage_pct"`
+			UptimeSeconds                 int64        `json:"uptime_seconds"`
+			Version                       string       `json:"version"`
+		}
+
+		sem := whatsapp.GetWebhookSemaphoreStats()
+
+		resp := healthResponse{
+			Goroutines:                    runtime.NumGoroutine(),
+			WebhookSemaphoreUsagePct:      sem.DeliveryUsagePct,
+			WebhookDispatchSemaphoreUsage: sem.DispatchUsagePct,
+			UptimeSeconds:                 whatsapp.GetUptimeSeconds(),
+			Version:                       config.AppVersion,
+		}
+
+		if dm == nil || !dm.IsHealthy() {
+			resp.Status = "unhealthy"
+			return c.Status(http.StatusServiceUnavailable).JSON(resp)
+		}
+
+		counts := dm.DeviceCountsByState()
+		resp.Devices = deviceCounts{
+			Total:        counts.Total,
+			LoggedIn:     counts.LoggedIn,
+			Connected:    counts.Connected,
+			Disconnected: counts.Disconnected,
+		}
+
+		functional := counts.LoggedIn + counts.Connected
+		var pct int
+		if counts.Total > 0 {
+			pct = functional * 100 / counts.Total
+		} else {
+			// No devices registered yet — manager is healthy, nothing to connect.
+			pct = 100
+		}
+
+		switch {
+		case pct >= 95:
+			resp.Status = "healthy"
+			return c.JSON(resp)
+		case pct >= 80:
+			resp.Status = "degraded"
+			return c.Status(http.StatusOK).JSON(resp)
+		default:
+			resp.Status = "unhealthy"
+			return c.Status(http.StatusServiceUnavailable).JSON(resp)
+		}
 	})
 
 	// Chatwoot webhook - registered BEFORE basic auth middleware

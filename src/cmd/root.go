@@ -215,6 +215,33 @@ func initEnvConfig() {
 	if viper.IsSet("chatwoot_days_limit_import_messages") {
 		config.ChatwootDaysLimitImportMessages = viper.GetInt("chatwoot_days_limit_import_messages")
 	}
+
+	// Scaling settings — only applied when the env var is explicitly set and positive
+	// so that omitting them keeps the existing default behaviour unchanged.
+	if v := viper.GetInt("webhook_semaphore_size"); v > 0 {
+		config.WebhookSemaphoreSize = v
+	}
+	if v := viper.GetInt("webhook_dispatch_size"); v > 0 {
+		config.WebhookDispatchSize = v
+	}
+	if v := viper.GetInt("reconnect_max_workers"); v > 0 {
+		config.ReconnectMaxWorkers = v
+	}
+	if v := viper.GetInt("boot_max_workers"); v > 0 {
+		config.BootMaxWorkers = v
+	}
+	if v := viper.GetInt("boot_device_delay_ms"); v > 0 {
+		config.BootDeviceDelayMs = v
+	}
+	if v := viper.GetInt("reconnect_cooldown_seconds"); v > 0 {
+		config.ReconnectCooldownSeconds = v
+	}
+	if v := viper.GetInt("reconnect_timeout_seconds"); v > 0 {
+		config.ReconnectTimeoutSeconds = v
+	}
+	if v := viper.GetInt("app_request_timeout_seconds"); v > 0 {
+		config.AppRequestTimeoutSeconds = v
+	}
 }
 
 func initFlags() {

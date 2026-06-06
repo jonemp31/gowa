@@ -85,13 +85,19 @@ func handleJoinedGroup(ctx context.Context, evt *events.JoinedGroup, deviceID st
 	log.Infof("Joined group %s (reason: %s, type: %s)", evt.JID, evt.Reason, evt.Type)
 
 	if len(config.WhatsappWebhook) > 0 {
-		go func(e *events.JoinedGroup, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardJoinedGroupToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward joined group event to webhook: %v", err)
-			}
-		}(evt, client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(e *events.JoinedGroup, c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardJoinedGroupToWebhook(webhookCtx, e, deviceID, c); err != nil {
+					logrus.Errorf("Failed to forward joined group event to webhook: %v", err)
+				}
+			}(evt, client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping group.joined event for device %s", deviceID)
+		}
 	}
 }
 

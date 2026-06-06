@@ -307,10 +307,13 @@ func (service serviceChat) SetDisappearingTimer(ctx context.Context, request dom
 		return response, err
 	}
 
-	// Update local storage immediately for consistency
+	// Update local storage immediately for consistency (best-effort; the WhatsApp
+	// timer was already set above so a failure here is non-fatal).
 	if existingChat, _ := service.chatStorageRepo.GetChatByDevice(deviceIDFromContext(ctx), request.ChatJID); existingChat != nil {
 		existingChat.EphemeralExpiration = request.TimerSeconds
-		_ = service.chatStorageRepo.StoreChat(existingChat)
+		if err := service.chatStorageRepo.StoreChat(existingChat); err != nil {
+			logrus.Warnf("[PERSIST] failed to update ephemeral timer cache for chat %s: %v", request.ChatJID, err)
+		}
 	}
 
 	// Build response
@@ -395,10 +398,13 @@ func (service serviceChat) ArchiveChat(ctx context.Context, request domainChat.A
 		response.Message = "Chat unarchived successfully"
 	}
 
-	// Update local storage immediately for consistency
+	// Update local storage immediately for consistency (best-effort; the WhatsApp
+	// archive state was already applied above so a failure here is non-fatal).
 	if existingChat, _ := service.chatStorageRepo.GetChatByDevice(deviceIDFromContext(ctx), request.ChatJID); existingChat != nil {
 		existingChat.Archived = request.Archived
-		_ = service.chatStorageRepo.StoreChat(existingChat)
+		if err := service.chatStorageRepo.StoreChat(existingChat); err != nil {
+			logrus.Warnf("[PERSIST] failed to update archive cache for chat %s: %v", request.ChatJID, err)
+		}
 	}
 
 	logrus.WithFields(logrus.Fields{

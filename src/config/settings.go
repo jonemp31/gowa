@@ -68,4 +68,25 @@ var (
 	// Chatwoot History Sync settings
 	ChatwootImportMessages          = false // Enable message history import to Chatwoot
 	ChatwootDaysLimitImportMessages = 3     // Days of history to import (default: 3)
+
+	// Scaling configuration — all values are tunable via environment variables.
+	// Defaults preserve the existing behaviour so no breaking change occurs when
+	// the variables are not set.
+	//
+	//   WEBHOOK_SEMAPHORE_SIZE      — max goroutines actively delivering webhook payloads  (default: 500)
+	//   WEBHOOK_DISPATCH_SIZE       — max goroutines queued waiting for a delivery slot     (default: 2000)
+	//   RECONNECT_MAX_WORKERS       — parallel reconnect attempts per checker cycle         (default: 10)
+	//   BOOT_MAX_WORKERS            — parallel connect attempts during boot                 (default: 5)
+	//   BOOT_DEVICE_DELAY_MS        — milliseconds between consecutive boot launches        (default: 1200)
+	//   RECONNECT_COOLDOWN_SECONDS  — minimum gap before re-attempting a device reconnect   (default: 120)
+	//   RECONNECT_TIMEOUT_SECONDS   — per-device connect() deadline                        (default: 15)
+	//   APP_REQUEST_TIMEOUT_SECONDS — global HTTP handler deadline                          (default: 45)
+	WebhookSemaphoreSize      = 500
+	WebhookDispatchSize       = 2000
+	ReconnectMaxWorkers       = 10
+	BootMaxWorkers            = 5
+	BootDeviceDelayMs         = 1200
+	ReconnectCooldownSeconds  = 120
+	ReconnectTimeoutSeconds   = 15
+	AppRequestTimeoutSeconds  = 45
 )

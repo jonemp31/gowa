@@ -6,25 +6,38 @@ import (
 	"mime/multipart"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainApp "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/app"
 	"github.com/sirupsen/logrus"
 )
 
 // reconnectCooldown guards against reconnect storms: a device that was already
-// attempted in the last 2 minutes is skipped until the cooldown expires.
+// attempted recently is skipped until the cooldown expires.
+// The cooldown duration is read from config.ReconnectCooldownSeconds
+// (env RECONNECT_COOLDOWN_SECONDS, default 120) so it can be tuned without
+// recompiling. Reading at call time (not package init) ensures env overrides
+// applied by viper in cobra.OnInitialize are always respected.
 var (
-	reconnectCooldownMu   sync.Mutex
-	reconnectCooldownMap  = make(map[string]time.Time)
-	reconnectCooldownTime = 2 * time.Minute
+	reconnectCooldownMu  sync.Mutex
+	reconnectCooldownMap = make(map[string]time.Time)
 )
+
+func reconnectCooldownDuration() time.Duration {
+	secs := config.ReconnectCooldownSeconds
+	if secs <= 0 {
+		secs = 120
+	}
+	return time.Duration(secs) * time.Second
+}
 
 func isReconnectOnCooldown(deviceID string) bool {
 	reconnectCooldownMu.Lock()
 	defer reconnectCooldownMu.Unlock()
 	last, ok := reconnectCooldownMap[deviceID]
-	return ok && time.Since(last) < reconnectCooldownTime
+	return ok && time.Since(last) < reconnectCooldownDuration()
 }
 
 func markReconnectAttempt(deviceID string) {
@@ -41,11 +54,23 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 		return
 	}
 
-	const maxWorkers = 5
-	const launchDelay = 1200 * time.Millisecond
+	maxWorkersVal := config.BootMaxWorkers
+	if maxWorkersVal <= 0 {
+		maxWorkersVal = 5
+	}
+	delayMs := config.BootDeviceDelayMs
+	if delayMs <= 0 {
+		delayMs = 1200
+	}
+	launchDelay := time.Duration(delayMs) * time.Millisecond
+	total := len(devices)
 
-	sem := make(chan struct{}, maxWorkers)
+	logrus.Infof("[AUTO-CONNECT] starting boot sequence: %d device(s), workers=%d, delay=%s",
+		total, maxWorkersVal, launchDelay)
+
+	sem := make(chan struct{}, maxWorkersVal)
 	var wg sync.WaitGroup
+	var completed atomic.Int32
 
 	for i, device := range devices {
 		if i > 0 {
@@ -56,6 +81,7 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 		go func(d domainApp.DevicesResponse) {
 			defer wg.Done()
 			defer func() { <-sem }()
+
 			if err := service.Reconnect(context.Background(), d.Device); err != nil {
 				// Device was never logged in (no JID) and old enough — purge on boot.
 				// Grace period of 30 min protects devices that were just created and are
@@ -76,10 +102,21 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 			} else {
 				logrus.Infof("[AUTO-CONNECT] connected device %s", d.Device)
 			}
+
+			// Progress counter — logged after every device regardless of outcome.
+			n := int(completed.Add(1))
+			pct := n * 100 / total
+			logrus.Infof("[AUTO-CONNECT] %d/%d devices completed (%d%%)", n, total, pct)
 		}(device)
 	}
 
-	wg.Wait()
+	// Do not block the caller. The API starts accepting requests as soon as Fiber
+	// binds — boot connections happen in the background. The wg.Wait goroutine
+	// only exists to emit a completion log once every device is processed.
+	go func() {
+		wg.Wait()
+		logrus.Infof("[AUTO-CONNECT] boot sequence finished — all %d device(s) processed", total)
+	}()
 }
 
 func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
@@ -111,9 +148,13 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 				toReconnect = append(toReconnect, device)
 			}
 
-			// Phase 2: reconnect in parallel, bounded to 10 concurrent workers.
-			const maxWorkers = 10
-			sem := make(chan struct{}, maxWorkers)
+			// Phase 2: reconnect in parallel, bounded by config.ReconnectMaxWorkers
+			// (env RECONNECT_MAX_WORKERS, default 10).
+			reconnectWorkers := config.ReconnectMaxWorkers
+			if reconnectWorkers <= 0 {
+				reconnectWorkers = 10
+			}
+			sem := make(chan struct{}, reconnectWorkers)
 			var wg sync.WaitGroup
 
 			for _, device := range toReconnect {

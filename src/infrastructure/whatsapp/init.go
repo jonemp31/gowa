@@ -181,3 +181,10 @@ func InitWaCLI(ctx context.Context, storeContainer, keysStoreContainer *sqlstore
 
 	return client
 }
+
+// GetUptimeSeconds returns the number of seconds elapsed since the process started.
+// startupTime is set at package initialisation (var startupTime = time.Now().Unix())
+// so this value is always non-negative.
+func GetUptimeSeconds() int64 {
+	return time.Now().Unix() - startupTime
+}

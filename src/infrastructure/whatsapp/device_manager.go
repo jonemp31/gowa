@@ -52,7 +52,7 @@ func (m *DeviceManager) AddDevice(instance *DeviceInstance) {
 
 	// Persist registry entry if available
 	if m.storage != nil {
-		_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+		if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 			DeviceID:    instance.ID(),
 			DisplayName: instance.DisplayName(),
 			JID:         instance.JID(),
@@ -60,7 +60,9 @@ func (m *DeviceManager) AddDevice(instance *DeviceInstance) {
 			Fingerprint: instance.Fingerprint(),
 			CreatedAt:   instance.CreatedAt(),
 			UpdatedAt:   time.Now(),
-		})
+		}); err != nil {
+			logrus.Errorf("[PERSIST] failed to save device record for %s: %v — device is in memory but will be lost on restart", instance.ID(), err)
+		}
 	}
 }
 
@@ -69,6 +71,38 @@ func (m *DeviceManager) GetDevice(id string) (*DeviceInstance, bool) {
 	defer m.mu.RUnlock()
 	instance, ok := m.devices[id]
 	return instance, ok
+}
+
+// DeviceStateCounts holds a snapshot of device counts broken down by connection state.
+// Used by the /health endpoint to report operational status without exposing internals.
+type DeviceStateCounts struct {
+	Total        int `json:"total"`
+	LoggedIn     int `json:"logged_in"`
+	Connected    int `json:"connected"`
+	Disconnected int `json:"disconnected"`
+}
+
+// DeviceCountsByState returns a live snapshot of device counts by state.
+// It calls UpdateStateFromClient() on every device so the counts reflect the
+// actual socket state rather than the cached snapshot.
+func (m *DeviceManager) DeviceCountsByState() DeviceStateCounts {
+	if m == nil {
+		return DeviceStateCounts{}
+	}
+	devices := m.ListDevices()
+	counts := DeviceStateCounts{Total: len(devices)}
+	for _, inst := range devices {
+		inst.UpdateStateFromClient()
+		switch inst.State() {
+		case domainDevice.DeviceStateLoggedIn:
+			counts.LoggedIn++
+		case domainDevice.DeviceStateConnected:
+			counts.Connected++
+		default:
+			counts.Disconnected++
+		}
+	}
+	return counts
 }
 
 // IsHealthy returns true if the device manager is initialized and has a valid store connection.
@@ -132,7 +166,9 @@ func (m *DeviceManager) RemoveDevice(id string) {
 	delete(m.devices, id)
 
 	if m.storage != nil && strings.TrimSpace(id) != "" {
-		_ = m.storage.DeleteDeviceRecord(id)
+		if err := m.storage.DeleteDeviceRecord(id); err != nil {
+			logrus.Errorf("[PERSIST] failed to delete device record for %s: %v — stale record may reappear on restart", id, err)
+		}
 	}
 }
 
@@ -351,12 +387,14 @@ func (m *DeviceManager) LoadExistingDevices(ctx context.Context) error {
 			orphanDevice.jid = jid
 			orphanDevice.mu.Unlock()
 			if m.storage != nil {
-				_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+				if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 					DeviceID:    orphanDevice.ID(),
 					JID:         jid,
 					ProxyURL:    orphanDevice.ProxyURL(),
 					Fingerprint: orphanDevice.Fingerprint(),
-				})
+				}); err != nil {
+					logrus.Warnf("[PERSIST] failed to update orphan device %s with JID %s: %v", orphanDevice.ID(), jid, err)
+				}
 			}
 			continue
 		}
@@ -394,7 +432,9 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 		isAutoCreated := strings.Contains(rec.DeviceID, "@")
 		if isAutoCreated && manualDeviceJIDs[rec.DeviceID] {
 			logrus.Warnf("[DEVICE_MANAGER] removing auto-created device %s", rec.DeviceID)
-			_ = m.storage.DeleteDeviceRecord(rec.DeviceID)
+			if err := m.storage.DeleteDeviceRecord(rec.DeviceID); err != nil {
+				logrus.Warnf("[PERSIST] failed to delete auto-created duplicate %s: %v — may reappear on next boot", rec.DeviceID, err)
+			}
 			continue
 		}
 
@@ -402,7 +442,9 @@ func (m *DeviceManager) loadFromRegistry(records []*domainChatStorage.DeviceReco
 		if rec.JID != "" {
 			if seenJIDs[rec.JID] {
 				logrus.Warnf("[DEVICE_MANAGER] removing duplicate JID device %s", rec.DeviceID)
-				_ = m.storage.DeleteDeviceRecord(rec.DeviceID)
+				if err := m.storage.DeleteDeviceRecord(rec.DeviceID); err != nil {
+					logrus.Warnf("[PERSIST] failed to delete duplicate JID device %s: %v — may reappear on next boot", rec.DeviceID, err)
+				}
 				continue
 			}
 			seenJIDs[rec.JID] = true
@@ -526,14 +568,16 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 		logrus.Infof("[DEVICE_MANAGER] assigned fingerprint %s/%s to device %s",
 			fp.PlatformType, fp.Os, deviceID)
 		if m.storage != nil {
-			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+			if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 				DeviceID:    inst.ID(),
 				DisplayName: inst.DisplayName(),
 				JID:         inst.JID(),
 				ProxyURL:    inst.ProxyURL(),
 				Fingerprint: inst.Fingerprint(),
 				UpdatedAt:   time.Now(),
-			})
+			}); err != nil {
+				logrus.Warnf("[PERSIST] failed to save fingerprint for device %s: %v — will get a new random fingerprint on restart", deviceID, err)
+			}
 		}
 	}
 
@@ -549,14 +593,16 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 		fp = RandomFingerprint()
 		inst.SetFingerprint(fp.String())
 		if m.storage != nil {
-			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+			if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 				DeviceID:    inst.ID(),
 				DisplayName: inst.DisplayName(),
 				JID:         inst.JID(),
 				ProxyURL:    inst.ProxyURL(),
 				Fingerprint: inst.Fingerprint(),
 				UpdatedAt:   time.Now(),
-			})
+			}); err != nil {
+				logrus.Warnf("[PERSIST] failed to save re-assigned fingerprint for device %s: %v — will get a new random fingerprint on restart", deviceID, err)
+			}
 		}
 	}
 	devicePropsMu.Lock()
@@ -822,13 +868,15 @@ func (m *DeviceManager) MigrateDevicesFromProxy(downProxyURL string) {
 
 		// Persist to DB
 		if m.storage != nil {
-			_ = m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+			if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
 				DeviceID:    inst.ID(),
 				DisplayName: inst.DisplayName(),
 				JID:         inst.JID(),
 				ProxyURL:    newProxy,
 				Fingerprint: inst.Fingerprint(),
-			})
+			}); err != nil {
+				logrus.Errorf("[PERSIST] failed to persist new proxy for device %s: %v — proxy will revert to old value on restart", inst.ID(), err)
+			}
 		}
 
 		// Disconnect old client and reconnect with new proxy

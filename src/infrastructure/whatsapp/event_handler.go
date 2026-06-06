@@ -126,13 +126,19 @@ func handleDeleteForMe(ctx context.Context, evt *events.DeleteForMe, chatStorage
 
 	// Send webhook notification for delete event
 	if len(config.WhatsappWebhook) > 0 {
-		go func(c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardDeleteToWebhook(webhookCtx, evt, message, deviceID, c); err != nil {
-				log.Errorf("Failed to forward delete event to webhook: %v", err)
-			}
-		}(client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardDeleteToWebhook(webhookCtx, evt, message, deviceID, c); err != nil {
+					log.Errorf("Failed to forward delete event to webhook: %v", err)
+				}
+			}(client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping message.deleted event for device %s", deviceID)
+		}
 	}
 }
 
@@ -304,15 +310,20 @@ func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, cl
 	}
 
 	// Forward receipt (ack) event to webhook if configured
-	// Note: Receipt events are not rate limited as they are critical for message delivery status
 	if len(config.WhatsappWebhook) > 0 && sendReceipt {
-		go func(e *events.Receipt, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardReceiptToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward ack event to webhook: %v", err)
-			}
-		}(evt, client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(e *events.Receipt, c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardReceiptToWebhook(webhookCtx, e, deviceID, c); err != nil {
+					logrus.Errorf("Failed to forward ack event to webhook: %v", err)
+				}
+			}(evt, client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping receipt event for device %s", deviceID)
+		}
 	}
 }
 
@@ -349,13 +360,19 @@ func handleAppState(_ context.Context, evt *events.AppState, deviceID string, cl
 	log.Debugf("App state event: %+v / %+v", evt.Index, evt.SyncActionValue)
 
 	if len(config.WhatsappWebhook) > 0 && isLabelAppState(evt) {
-		go func(e *events.AppState, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardLabelAppStateToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward label appstate event to webhook: %v", err)
-			}
-		}(evt, client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(e *events.AppState, c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardLabelAppStateToWebhook(webhookCtx, e, deviceID, c); err != nil {
+					logrus.Errorf("Failed to forward label appstate event to webhook: %v", err)
+				}
+			}(evt, client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping app_state event for device %s", deviceID)
+		}
 	}
 }
 
@@ -384,13 +401,19 @@ func handleGroupInfo(ctx context.Context, evt *events.GroupInfo, deviceID string
 
 	// Forward group info event to webhook if configured
 	if len(config.WhatsappWebhook) > 0 {
-		go func(e *events.GroupInfo, c *whatsmeow.Client) {
-			webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := forwardGroupInfoToWebhook(webhookCtx, e, deviceID, c); err != nil {
-				logrus.Errorf("Failed to forward group info event to webhook: %v", err)
-			}
-		}(evt, client)
+		select {
+		case getWebhookDispatchSemaphore() <- struct{}{}:
+			go func(e *events.GroupInfo, c *whatsmeow.Client) {
+				defer func() { <-getWebhookDispatchSemaphore() }()
+				webhookCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := forwardGroupInfoToWebhook(webhookCtx, e, deviceID, c); err != nil {
+					logrus.Errorf("Failed to forward group info event to webhook: %v", err)
+				}
+			}(evt, client)
+		default:
+			logrus.Warnf("[WEBHOOK] dispatch queue full, dropping group.info event for device %s", deviceID)
+		}
 	}
 }
 

@@ -212,12 +212,16 @@ func (service *serviceApp) Reconnect(_ context.Context, deviceID string) (err er
 	type connectResult struct{ err error }
 	ch := make(chan connectResult, 1)
 	go func() { ch <- connectResult{client.Connect()} }()
+	reconnectTimeout := time.Duration(config.ReconnectTimeoutSeconds) * time.Second
+	if reconnectTimeout <= 0 {
+		reconnectTimeout = 15 * time.Second
+	}
 	select {
 	case res := <-ch:
 		err = res.err
-	case <-time.After(15 * time.Second):
+	case <-time.After(reconnectTimeout):
 		client.Disconnect()
-		err = fmt.Errorf("connect timeout after 15s")
+		err = fmt.Errorf("connect timeout after %s", reconnectTimeout)
 	}
 	instance.UpdateStateFromClient()
 	if err != nil {

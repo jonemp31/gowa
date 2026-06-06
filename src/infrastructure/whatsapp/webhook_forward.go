@@ -18,10 +18,90 @@ import (
 var submitWebhookFn = submitWebhook
 
 // webhookSemaphore limits the number of goroutines concurrently delivering webhook
-// payloads. 500 slots accommodate deployments with up to ~200 active devices without
-// restricting throughput under normal conditions, while bounding goroutine and
-// connection accumulation when the webhook endpoint is slow or unavailable.
-var webhookSemaphore = make(chan struct{}, 500)
+// payloads. The capacity is read from config.WebhookSemaphoreSize (env
+// WEBHOOK_SEMAPHORE_SIZE, default 500) so it can be tuned without recompiling.
+// Lazy-initialised via sync.Once so the value is always read after viper has applied
+// env overrides (cobra.OnInitialize runs before the first HTTP request is served).
+var (
+	webhookSemaphoreOnce sync.Once
+	webhookSemaphore     chan struct{}
+)
+
+func getWebhookSemaphore() chan struct{} {
+	webhookSemaphoreOnce.Do(func() {
+		size := config.WebhookSemaphoreSize
+		if size <= 0 {
+			size = 500
+		}
+		webhookSemaphore = make(chan struct{}, size)
+	})
+	return webhookSemaphore
+}
+
+// webhookDispatchSemaphore limits the total number of goroutines that may be
+// LAUNCHED (queued or actively delivering) for webhook dispatch. This bounds
+// goroutine accumulation before they even acquire a delivery slot, preventing
+// the Go scheduler from being overwhelmed during event floods.
+//
+// Capacity is read from config.WebhookDispatchSize (env WEBHOOK_DISPATCH_SIZE,
+// default 2000) and lazy-initialised for the same reason as webhookSemaphore.
+//
+// When the dispatch semaphore is full, new events are DROPPED with a Warn log
+// rather than blocking — the whatsmeow event loop must never be stalled.
+var (
+	webhookDispatchSemaphoreOnce sync.Once
+	webhookDispatchSemaphore     chan struct{}
+)
+
+func getWebhookDispatchSemaphore() chan struct{} {
+	webhookDispatchSemaphoreOnce.Do(func() {
+		size := config.WebhookDispatchSize
+		if size <= 0 {
+			size = 2000
+		}
+		webhookDispatchSemaphore = make(chan struct{}, size)
+	})
+	return webhookDispatchSemaphore
+}
+
+// WebhookSemaphoreStats holds usage information for both webhook semaphores.
+// Both percentages are integers in the range [0, 100].
+type WebhookSemaphoreStats struct {
+	DeliveryInUse    int `json:"delivery_in_use"`
+	DeliveryCap      int `json:"delivery_cap"`
+	DeliveryUsagePct int `json:"delivery_usage_pct"`
+	DispatchInUse    int `json:"dispatch_in_use"`
+	DispatchCap      int `json:"dispatch_cap"`
+	DispatchUsagePct int `json:"dispatch_usage_pct"`
+}
+
+// GetWebhookSemaphoreStats returns a live snapshot of both webhook semaphores.
+// Calling this initialises the semaphores if they haven't been created yet —
+// which is safe because config is always loaded before any HTTP request is served.
+func GetWebhookSemaphoreStats() WebhookSemaphoreStats {
+	s := getWebhookSemaphore()
+	sInUse, sCap := len(s), cap(s)
+	sPct := 0
+	if sCap > 0 {
+		sPct = sInUse * 100 / sCap
+	}
+
+	d := getWebhookDispatchSemaphore()
+	dInUse, dCap := len(d), cap(d)
+	dPct := 0
+	if dCap > 0 {
+		dPct = dInUse * 100 / dCap
+	}
+
+	return WebhookSemaphoreStats{
+		DeliveryInUse:    sInUse,
+		DeliveryCap:      sCap,
+		DeliveryUsagePct: sPct,
+		DispatchInUse:    dInUse,
+		DispatchCap:      dCap,
+		DispatchUsagePct: dPct,
+	}
+}
 
 // mutexShardCount is the number of mutex shards for contact synchronization.
 // Using a fixed array avoids memory growth from sync.Map while still providing
@@ -90,8 +170,8 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 	// expires, preventing unbounded goroutine accumulation under sustained load or
 	// when the webhook endpoint is slow/unavailable.
 	select {
-	case webhookSemaphore <- struct{}{}:
-		defer func() { <-webhookSemaphore }()
+	case getWebhookSemaphore() <- struct{}{}:
+		defer func() { <-getWebhookSemaphore() }()
 	case <-ctx.Done():
 		logrus.Warnf("[WEBHOOK] semaphore wait timed out for %s event, dropping delivery", eventName)
 		return ctx.Err()
