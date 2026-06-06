@@ -56,6 +56,9 @@ func NewSendService(appService app.IAppUsecase, chatStorageRepo domainChatStorag
 // once on WhatsApp error 463 after a SubscribePresence pre-warm — see
 // infrastructure/whatsapp/send_retry.go for the protocol-level rationale.
 func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeow.Client, recipient types.JID, msg *waE2E.Message, content string) (whatsmeow.SendResponse, error) {
+	if !client.IsConnected() {
+		return whatsmeow.SendResponse{}, pkgError.ErrNotConnected
+	}
 	ts, err := whatsapp.SendMessageWithReachoutRetry(ctx, client, recipient, msg)
 	if err != nil {
 		return whatsmeow.SendResponse{}, normalizeSendError(err)

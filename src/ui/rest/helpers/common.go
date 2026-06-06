@@ -12,6 +12,27 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// reconnectCooldown guards against reconnect storms: a device that was already
+// attempted in the last 2 minutes is skipped until the cooldown expires.
+var (
+	reconnectCooldownMu   sync.Mutex
+	reconnectCooldownMap  = make(map[string]time.Time)
+	reconnectCooldownTime = 2 * time.Minute
+)
+
+func isReconnectOnCooldown(deviceID string) bool {
+	reconnectCooldownMu.Lock()
+	defer reconnectCooldownMu.Unlock()
+	last, ok := reconnectCooldownMap[deviceID]
+	return ok && time.Since(last) < reconnectCooldownTime
+}
+
+func markReconnectAttempt(deviceID string) {
+	reconnectCooldownMu.Lock()
+	reconnectCooldownMap[deviceID] = time.Now()
+	reconnectCooldownMu.Unlock()
+}
+
 func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 	time.Sleep(2 * time.Second)
 	devices, err := service.FetchDevices(context.Background())
@@ -36,7 +57,22 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 			defer wg.Done()
 			defer func() { <-sem }()
 			if err := service.Reconnect(context.Background(), d.Device); err != nil {
-				logrus.Warnf("[AUTO-CONNECT] failed for device %s: %v", d.Device, err)
+				// Device was never logged in (no JID) and old enough — purge on boot.
+				// Grace period of 30 min protects devices that were just created and are
+				// waiting for a QR scan before the API was restarted.
+				if strings.Contains(err.Error(), "session deleted") && d.JID == "" {
+					age := time.Since(d.CreatedAt)
+					if age >= 30*time.Minute {
+						logrus.Infof("[AUTO-CONNECT] device %s never logged in (%s old) — purging on boot", d.Device, age.Round(time.Minute))
+						if purgeErr := service.Logout(context.Background(), d.Device); purgeErr != nil {
+							logrus.Warnf("[AUTO-CONNECT] failed to purge device %s: %v", d.Device, purgeErr)
+						}
+					} else {
+						logrus.Infof("[AUTO-CONNECT] device %s never logged in but only %s old — skipping purge", d.Device, age.Round(time.Minute))
+					}
+				} else {
+					logrus.Warnf("[AUTO-CONNECT] failed for device %s: %v", d.Device, err)
+				}
 			} else {
 				logrus.Infof("[AUTO-CONNECT] connected device %s", d.Device)
 			}
@@ -49,7 +85,7 @@ func SetAutoConnectAfterBooting(service domainApp.IAppUsecase) {
 func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 	go func() {
 		for {
-			time.Sleep(5 * time.Minute)
+			time.Sleep(60 * time.Second)
 			devices, err := service.FetchDevices(context.Background())
 			if err != nil || len(devices) == 0 {
 				continue
@@ -57,20 +93,41 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 			for _, device := range devices {
 				isConnected, _, _ := service.Status(context.Background(), device.Device)
 				if !isConnected {
+					if isReconnectOnCooldown(device.Device) {
+						logrus.Debugf("[AUTO-RECONNECT] device %s on cooldown, skipping", device.Device)
+						continue
+					}
+					markReconnectAttempt(device.Device)
 					if err := service.Reconnect(context.Background(), device.Device); err != nil {
-						// Session deleted means the user revoked access from their phone.
-						// Only purge if the device is older than 2 hours — this protects
-						// newly created devices that are still waiting for a QR scan.
 						if strings.Contains(err.Error(), "session deleted") {
 							age := time.Since(device.CreatedAt)
-							if age < 2*time.Hour {
-								logrus.Infof("[AUTO-RECONNECT] session deleted for device %s but created %s ago — skipping auto-purge",
-									device.Device, age.Round(time.Minute))
+							if device.JID == "" {
+								// No JID means this device was never logged in (no QR scan completed).
+								// Use a short grace period so a freshly created device waiting for
+								// QR scan is not immediately purged if the checker fires first.
+								if age < 30*time.Minute {
+									logrus.Infof("[AUTO-RECONNECT] device %s never logged in, created %s ago — skipping purge (grace period)",
+										device.Device, age.Round(time.Minute))
+								} else {
+									logrus.Infof("[AUTO-RECONNECT] device %s never logged in, created %s ago — purging",
+										device.Device, age.Round(time.Minute))
+									if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
+										logrus.Warnf("[AUTO-RECONNECT] failed to purge device %s: %v", device.Device, purgeErr)
+									}
+								}
 							} else {
-								logrus.Infof("[AUTO-RECONNECT] session deleted for device %s (created %s ago) — removing",
-									device.Device, age.Round(time.Minute))
-								if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
-									logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+								// Device had a session (JID known) but it was revoked from the phone.
+								// Keep the 2h protection before purging to avoid false positives from
+								// transient server-side errors.
+								if age < 2*time.Hour {
+									logrus.Infof("[AUTO-RECONNECT] session deleted for device %s but created %s ago — skipping auto-purge",
+										device.Device, age.Round(time.Minute))
+								} else {
+									logrus.Infof("[AUTO-RECONNECT] session deleted for device %s (created %s ago) — removing",
+										device.Device, age.Round(time.Minute))
+									if purgeErr := service.Logout(context.Background(), device.Device); purgeErr != nil {
+										logrus.Warnf("[AUTO-RECONNECT] failed to remove session-deleted device %s: %v", device.Device, purgeErr)
+									}
 								}
 							}
 						} else {
@@ -177,6 +234,18 @@ func scheduleDevicePresences(service domainApp.IAppUsecase, device domainApp.Dev
 			ctx := context.Background()
 			if err := service.SendDevicePresence(ctx, device.Device, "available"); err != nil {
 				logrus.Warnf("[PRESENCE-SCHEDULER] %s available failed for %s: %v", label, device.Device, err)
+				// If the device appears connected but SendPresence failed, it is a zombie:
+				// socket is alive but the session is broken. Force a full reconnect.
+				isConnected, _, _ := service.Status(ctx, device.Device)
+				if isConnected && !isReconnectOnCooldown(device.Device) {
+					logrus.Warnf("[ZOMBIE-DETECT] device %s connected but presence failed — forcing reconnect", device.Device)
+					markReconnectAttempt(device.Device)
+					if reconnErr := service.Reconnect(ctx, device.Device); reconnErr != nil {
+						logrus.Warnf("[ZOMBIE-DETECT] reconnect failed for device %s: %v", device.Device, reconnErr)
+					} else {
+						logrus.Infof("[ZOMBIE-DETECT] device %s recovered via reconnect", device.Device)
+					}
+				}
 				return
 			}
 			logrus.Infof("[PRESENCE-SCHEDULER] %s: %s online for %ds", label, device.Device, seconds)

@@ -6,6 +6,7 @@ import (
 
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
+	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow"
 )
 
@@ -167,6 +168,7 @@ func (d *DeviceInstance) UpdateStateFromClient() domainDevice.DeviceState {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
+	prev := d.state
 	switch {
 	case d.client != nil && d.client.IsLoggedIn():
 		d.state = domainDevice.DeviceStateLoggedIn
@@ -174,6 +176,10 @@ func (d *DeviceInstance) UpdateStateFromClient() domainDevice.DeviceState {
 		d.state = domainDevice.DeviceStateConnected
 	default:
 		d.state = domainDevice.DeviceStateDisconnected
+	}
+
+	if prev == domainDevice.DeviceStateLoggedIn && d.state == domainDevice.DeviceStateDisconnected {
+		logrus.Warnf("[STATE] device %s transitioned logged_in → disconnected (socket dropped without logout event)", d.id)
 	}
 
 	d.refreshIdentityLocked()
