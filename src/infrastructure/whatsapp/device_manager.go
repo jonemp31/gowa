@@ -76,15 +76,22 @@ func (m *DeviceManager) GetDevice(id string) (*DeviceInstance, bool) {
 // DeviceStateCounts holds a snapshot of device counts broken down by connection state.
 // Used by the /health endpoint to report operational status without exposing internals.
 type DeviceStateCounts struct {
-	Total        int `json:"total"`
-	LoggedIn     int `json:"logged_in"`
-	Connected    int `json:"connected"`
-	Disconnected int `json:"disconnected"`
+	Total           int `json:"total"`
+	TotalWithSession int `json:"total_with_session"`
+	LoggedIn        int `json:"logged_in"`
+	Connected       int `json:"connected"`
+	Disconnected    int `json:"disconnected"`
+	PendingQR       int `json:"pending_qr"`
 }
 
 // DeviceCountsByState returns a live snapshot of device counts by state.
 // It calls UpdateStateFromClient() on every device so the counts reflect the
 // actual socket state rather than the cached snapshot.
+//
+// TotalWithSession counts only devices that have an active WhatsApp session
+// (JID != ""). Devices without a session are placeholders awaiting a QR scan
+// and are excluded from health percentage calculations — they are not "broken",
+// they simply have never been paired.
 func (m *DeviceManager) DeviceCountsByState() DeviceStateCounts {
 	if m == nil {
 		return DeviceStateCounts{}
@@ -92,6 +99,11 @@ func (m *DeviceManager) DeviceCountsByState() DeviceStateCounts {
 	devices := m.ListDevices()
 	counts := DeviceStateCounts{Total: len(devices)}
 	for _, inst := range devices {
+		if inst.JID() == "" {
+			counts.PendingQR++
+			continue
+		}
+		counts.TotalWithSession++
 		inst.UpdateStateFromClient()
 		switch inst.State() {
 		case domainDevice.DeviceStateLoggedIn:

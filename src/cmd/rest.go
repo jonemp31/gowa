@@ -96,10 +96,12 @@ func restServer(_ *cobra.Command, _ []string) {
 	//   unhealthy — <80 % connected  OR device manager not initialised
 	app.Get("/health", func(c *fiber.Ctx) error {
 		type deviceCounts struct {
-			Total        int `json:"total"`
-			LoggedIn     int `json:"logged_in"`
-			Connected    int `json:"connected"`
-			Disconnected int `json:"disconnected"`
+			Total            int `json:"total"`
+			TotalWithSession int `json:"total_with_session"`
+			LoggedIn         int `json:"logged_in"`
+			Connected        int `json:"connected"`
+			Disconnected     int `json:"disconnected"`
+			PendingQR        int `json:"pending_qr"`
 		}
 		type healthResponse struct {
 			Status                        string       `json:"status"`
@@ -128,18 +130,24 @@ func restServer(_ *cobra.Command, _ []string) {
 
 		counts := dm.DeviceCountsByState()
 		resp.Devices = deviceCounts{
-			Total:        counts.Total,
-			LoggedIn:     counts.LoggedIn,
-			Connected:    counts.Connected,
-			Disconnected: counts.Disconnected,
+			Total:            counts.Total,
+			TotalWithSession: counts.TotalWithSession,
+			LoggedIn:         counts.LoggedIn,
+			Connected:        counts.Connected,
+			Disconnected:     counts.Disconnected,
+			PendingQR:        counts.PendingQR,
 		}
 
+		// Health percentage is calculated only against devices that have an active
+		// WhatsApp session (JID known). Devices awaiting a QR scan are placeholders —
+		// they are not broken, so they must not drag the health score down.
 		functional := counts.LoggedIn + counts.Connected
 		var pct int
-		if counts.Total > 0 {
-			pct = functional * 100 / counts.Total
-		} else {
-			// No devices registered yet — manager is healthy, nothing to connect.
+		switch {
+		case counts.TotalWithSession > 0:
+			pct = functional * 100 / counts.TotalWithSession
+		default:
+			// No paired devices yet — manager is operational, nothing to monitor.
 			pct = 100
 		}
 
