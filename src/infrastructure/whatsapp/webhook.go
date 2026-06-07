@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
@@ -16,18 +17,32 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func submitWebhook(ctx context.Context, payload map[string]any, url string) error {
-	// Configure HTTP client with optional TLS skip verification
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: config.WhatsappWebhookInsecureSkipVerify,
-		},
-	}
-	client := &http.Client{
-		Timeout:   10 * time.Second,
-		Transport: transport,
-	}
+var (
+	webhookClientOnce sync.Once
+	webhookClient     *http.Client
+)
 
+// getWebhookClient returns a shared HTTP client for webhook delivery.
+// Initialised once so the underlying Transport — and its TCP connection pool —
+// is reused across all calls, preventing a new TCP handshake per attempt.
+func getWebhookClient() *http.Client {
+	webhookClientOnce.Do(func() {
+		webhookClient = &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					InsecureSkipVerify: config.WhatsappWebhookInsecureSkipVerify,
+				},
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
+	})
+	return webhookClient
+}
+
+func submitWebhook(ctx context.Context, payload map[string]any, url string) error {
 	postBody, err := json.Marshal(payload)
 	if err != nil {
 		return pkgError.WebhookError(fmt.Sprintf("Failed to marshal body: %v", err))
@@ -54,9 +69,13 @@ func submitWebhook(ctx context.Context, payload map[string]any, url string) erro
 	for attempt = 0; attempt < maxAttempts; attempt++ {
 		// Create new request body for each attempt
 		req.Body = io.NopCloser(bytes.NewBuffer(postBody))
-		resp, err := client.Do(req)
+		resp, err := getWebhookClient().Do(req)
 		if err == nil {
-			defer resp.Body.Close()
+			// Drain and close immediately so the underlying TCP connection is
+			// returned to the pool. Using defer here would accumulate unclosed
+			// bodies across iterations, exhausting file descriptors under load.
+			_, _ = io.ReadAll(resp.Body)
+			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				logrus.Infof("Successfully submitted webhook on attempt %d", attempt+1)
 				return nil

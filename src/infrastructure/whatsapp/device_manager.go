@@ -206,13 +206,19 @@ func (m *DeviceManager) PurgeDevice(ctx context.Context, deviceID string) error 
 	// which is sufficient to cleanly remove the device.
 	if inst, ok := m.GetDevice(deviceID); ok && inst != nil {
 		if cli := inst.GetClient(); cli != nil {
+			// Disconnect first to stop the event loop before touching the store.
+			// Calling Logout before Disconnect leaves the WebSocket open while
+			// whatsmeow deletes rows from whatsmeow_device; any in-flight event
+			// (e.g. an identity-key insert) races against that DELETE and produces
+			// a foreign-key violation in PostgreSQL. Disconnecting first ensures
+			// no new events are processed after the session records are removed.
+			cli.Disconnect()
 			if cli.Store != nil && cli.Store.ID != nil {
 				if err := cli.Logout(ctx); err != nil {
 					logrus.WithError(err).Warnf("[DEVICE_MANAGER] logout failed for device %s", deviceID)
 					recordErr(err)
 				}
 			}
-			cli.Disconnect()
 		}
 	}
 
@@ -863,52 +869,66 @@ func (m *DeviceManager) MigrateDevicesFromProxy(downProxyURL string) {
 
 	logrus.Warnf("[PROXY_MIGRATION] Proxy %s is DOWN — migrating %d device(s)", maskProxyURL(downProxyURL), len(affected))
 
+	sem := make(chan struct{}, config.ReconnectMaxWorkers)
+	var wg sync.WaitGroup
+
 	for _, inst := range affected {
-		// Get fresh counts for balanced selection
-		counts := m.GetDeviceProxyCounts()
-		newProxy := pm.FindHealthyReplacement(downProxyURL, counts)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(i *DeviceInstance) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		if newProxy == "" {
-			logrus.Errorf("[PROXY_MIGRATION] No healthy replacement for device %s — device stays disconnected", inst.ID())
-			continue
-		}
+			// Get fresh counts inside the goroutine so each device sees the
+			// latest proxy load after previous goroutines have already assigned
+			// their devices, enabling balanced distribution.
+			counts := m.GetDeviceProxyCounts()
+			newProxy := pm.FindHealthyReplacement(downProxyURL, counts)
 
-		logrus.Infof("[PROXY_MIGRATION] Migrating device %s: %s → %s", inst.ID(), maskProxyURL(downProxyURL), maskProxyURL(newProxy))
-
-		// Update proxy on the instance
-		inst.SetProxyURL(newProxy)
-
-		// Persist to DB
-		if m.storage != nil {
-			if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
-				DeviceID:    inst.ID(),
-				DisplayName: inst.DisplayName(),
-				JID:         inst.JID(),
-				ProxyURL:    newProxy,
-				Fingerprint: inst.Fingerprint(),
-			}); err != nil {
-				logrus.Errorf("[PERSIST] failed to persist new proxy for device %s: %v — proxy will revert to old value on restart", inst.ID(), err)
+			if newProxy == "" {
+				logrus.Errorf("[PROXY_MIGRATION] No healthy replacement for device %s — device stays disconnected", i.ID())
+				return
 			}
-		}
 
-		// Disconnect old client and reconnect with new proxy
-		cli := inst.GetClient()
-		if cli == nil {
-			continue
-		}
+			logrus.Infof("[PROXY_MIGRATION] Migrating device %s: %s → %s", i.ID(), maskProxyURL(downProxyURL), maskProxyURL(newProxy))
 
-		cli.Disconnect()
+			// Update proxy on the instance
+			i.SetProxyURL(newProxy)
 
-		if err := cli.SetProxyAddress(newProxy); err != nil {
-			logrus.Errorf("[PROXY_MIGRATION] Failed to set new proxy on device %s: %v", inst.ID(), err)
-			continue
-		}
+			// Persist to DB
+			if m.storage != nil {
+				if err := m.storage.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+					DeviceID:    i.ID(),
+					DisplayName: i.DisplayName(),
+					JID:         i.JID(),
+					ProxyURL:    newProxy,
+					Fingerprint: i.Fingerprint(),
+				}); err != nil {
+					logrus.Errorf("[PERSIST] failed to persist new proxy for device %s: %v — proxy will revert to old value on restart", i.ID(), err)
+				}
+			}
 
-		if err := cli.Connect(); err != nil {
-			logrus.Errorf("[PROXY_MIGRATION] Failed to reconnect device %s via new proxy: %v", inst.ID(), err)
-		} else {
-			inst.UpdateStateFromClient()
-			logrus.Infof("[PROXY_MIGRATION] Device %s successfully migrated to %s", inst.ID(), maskProxyURL(newProxy))
-		}
+			// Disconnect old client and reconnect with new proxy
+			cli := i.GetClient()
+			if cli == nil {
+				return
+			}
+
+			cli.Disconnect()
+
+			if err := cli.SetProxyAddress(newProxy); err != nil {
+				logrus.Errorf("[PROXY_MIGRATION] Failed to set new proxy on device %s: %v", i.ID(), err)
+				return
+			}
+
+			if err := cli.Connect(); err != nil {
+				logrus.Errorf("[PROXY_MIGRATION] Failed to reconnect device %s via new proxy: %v", i.ID(), err)
+			} else {
+				i.UpdateStateFromClient()
+				logrus.Infof("[PROXY_MIGRATION] Device %s successfully migrated to %s", i.ID(), maskProxyURL(newProxy))
+			}
+		}(inst)
 	}
+
+	wg.Wait()
 }

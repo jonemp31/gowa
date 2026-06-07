@@ -83,8 +83,9 @@ func (r *SQLiteRepository) GetChatByDevice(deviceID, jid string) (*domainChatSto
 	return chat, err
 }
 
-// GetMessageByID retrieves a message by its ID from any chat
-// This is more efficient than searching through all chats
+// GetMessageByID retrieves a message by its ID searching across all devices.
+// Intentionally cross-device — used by revoke/reaction where the caller only
+// needs the sender JID, which is stable regardless of device ownership.
 func (r *SQLiteRepository) GetMessageByID(id string) (*domainChatStorage.Message, error) {
 	query := `
 		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
@@ -96,6 +97,27 @@ func (r *SQLiteRepository) GetMessageByID(id string) (*domainChatStorage.Message
 	`
 
 	message, err := r.scanMessage(r.db.QueryRow(query, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+
+	return message, err
+}
+
+// GetMessageByIDForDevice retrieves a message by its ID scoped to a specific device.
+// Used for reply context and delete-for-me where cross-device contamination must
+// be avoided.
+func (r *SQLiteRepository) GetMessageByIDForDevice(id, deviceID string) (*domainChatStorage.Message, error) {
+	query := `
+		SELECT id, chat_jid, device_id, sender, content, timestamp, is_from_me,
+			media_type, call_metadata, filename, url, media_key, file_sha256,
+			file_enc_sha256, file_length, referral_metadata, created_at, updated_at
+		FROM messages
+		WHERE id = ? AND device_id = ?
+		LIMIT 1
+	`
+
+	message, err := r.scanMessage(r.db.QueryRow(query, id, deviceID))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -829,9 +851,9 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 
 	// Try update first, then insert if no rows affected (cross-db compatible)
 	result, err := r.db.Exec(`
-		UPDATE devices SET display_name = ?, jid = ?, updated_at = ?
+		UPDATE devices SET display_name = ?, jid = ?, proxy_url = ?, fingerprint = ?, updated_at = ?
 		WHERE device_id = ?
-	`, record.DisplayName, record.JID, record.UpdatedAt, record.DeviceID)
+	`, record.DisplayName, record.JID, record.ProxyURL, record.Fingerprint, record.UpdatedAt, record.DeviceID)
 	if err != nil {
 		return err
 	}
@@ -839,9 +861,9 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		_, err = r.db.Exec(`
-			INSERT INTO devices (device_id, display_name, jid, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-		`, record.DeviceID, record.DisplayName, record.JID, record.CreatedAt, record.UpdatedAt)
+			INSERT INTO devices (device_id, display_name, jid, proxy_url, fingerprint, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`, record.DeviceID, record.DisplayName, record.JID, record.ProxyURL, record.Fingerprint, record.CreatedAt, record.UpdatedAt)
 	}
 	return err
 }
@@ -849,7 +871,7 @@ func (r *SQLiteRepository) SaveDeviceRecord(record *domainChatStorage.DeviceReco
 // ListDeviceRecords returns all registered devices.
 func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecord, error) {
 	rows, err := r.db.Query(`
-		SELECT device_id, display_name, jid, created_at, updated_at
+		SELECT device_id, display_name, jid, proxy_url, fingerprint, created_at, updated_at
 		FROM devices
 		ORDER BY created_at ASC
 	`)
@@ -861,7 +883,7 @@ func (r *SQLiteRepository) ListDeviceRecords() ([]*domainChatStorage.DeviceRecor
 	var records []*domainChatStorage.DeviceRecord
 	for rows.Next() {
 		var rec domainChatStorage.DeviceRecord
-		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+		if err := rows.Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.Fingerprint, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
 			return nil, err
 		}
 		records = append(records, &rec)
@@ -878,11 +900,11 @@ func (r *SQLiteRepository) GetDeviceRecord(deviceID string) (*domainChatStorage.
 
 	rec := &domainChatStorage.DeviceRecord{}
 	err := r.db.QueryRow(`
-		SELECT device_id, display_name, jid, created_at, updated_at
+		SELECT device_id, display_name, jid, proxy_url, fingerprint, created_at, updated_at
 		FROM devices
 		WHERE device_id = ?
 		LIMIT 1
-	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.CreatedAt, &rec.UpdatedAt)
+	`, deviceID).Scan(&rec.DeviceID, &rec.DisplayName, &rec.JID, &rec.ProxyURL, &rec.Fingerprint, &rec.CreatedAt, &rec.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1632,6 +1654,9 @@ func (r *SQLiteRepository) ensureCriticalColumns() error {
 		`ALTER TABLE chats ADD COLUMN metadata TEXT DEFAULT NULL`,
 		`ALTER TABLE messages ADD COLUMN metadata TEXT DEFAULT NULL`,
 		`ALTER TABLE messages ADD COLUMN edit_count INTEGER DEFAULT 0`,
+		`ALTER TABLE devices ADD COLUMN proxy_url TEXT DEFAULT ''`,
+		`ALTER TABLE devices ADD COLUMN fingerprint TEXT DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_messages_device_chat_ts ON messages(device_id, chat_jid, timestamp DESC)`,
 	}
 	for _, stmt := range critical {
 		if _, err := r.db.Exec(stmt); err != nil && !isMigrationAlreadyApplied(err) {
@@ -1836,5 +1861,16 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 22: Index edit history by edit time
 		`CREATE INDEX IF NOT EXISTS idx_message_edits_edited_at ON message_edits(edited_at)`,
+
+		// Migration 23: Add proxy_url column to devices for persistence across restarts
+		`ALTER TABLE devices ADD COLUMN proxy_url TEXT DEFAULT ''`,
+
+		// Migration 24: Add fingerprint column to devices for persistence across restarts
+		`ALTER TABLE devices ADD COLUMN fingerprint TEXT DEFAULT ''`,
+
+		// Migration 25: Compound index covering the most common message query pattern:
+		// WHERE device_id = ? AND chat_jid = ? ORDER BY timestamp DESC LIMIT ?
+		// Without this, SQLite uses a single-column index and sorts in memory.
+		`CREATE INDEX IF NOT EXISTS idx_messages_device_chat_ts ON messages(device_id, chat_jid, timestamp DESC)`,
 	}
 }

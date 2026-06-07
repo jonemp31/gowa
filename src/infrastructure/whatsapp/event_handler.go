@@ -311,6 +311,13 @@ func handleReceipt(ctx context.Context, evt *events.Receipt, deviceID string, cl
 
 	// Forward receipt (ack) event to webhook if configured
 	if len(config.WhatsappWebhook) > 0 && sendReceipt {
+		// Early exit when message.ack is not in the whitelist: avoids spawning a
+		// goroutine and acquiring the dispatch semaphore only to discard the event
+		// inside forwardPayloadToConfiguredWebhooks. With WHATSAPP_AUTO_MARK_READ=true
+		// this can happen hundreds of times per minute.
+		if len(config.WhatsappWebhookEvents) > 0 && !isEventWhitelisted("message.ack") {
+			return
+		}
 		select {
 		case getWebhookDispatchSemaphore() <- struct{}{}:
 			go func(e *events.Receipt, c *whatsmeow.Client) {

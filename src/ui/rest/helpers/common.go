@@ -2,6 +2,8 @@ package helpers
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"math/rand"
 	"mime/multipart"
 	"strings"
@@ -127,6 +129,16 @@ func SetAutoReconnectChecking(service domainApp.IAppUsecase) {
 		defer ticker.Stop()
 
 		for range ticker.C {
+			// Prune cooldown entries older than 2× the cooldown window so device IDs
+			// from deleted or purged devices don't accumulate indefinitely in memory.
+			reconnectCooldownMu.Lock()
+			for id, ts := range reconnectCooldownMap {
+				if time.Since(ts) > 2*reconnectCooldownDuration() {
+					delete(reconnectCooldownMap, id)
+				}
+			}
+			reconnectCooldownMu.Unlock()
+
 			devices, err := service.FetchDevices(context.Background())
 			if err != nil || len(devices) == 0 {
 				continue
@@ -323,12 +335,17 @@ func scheduleDevicePresences(service domainApp.IAppUsecase, device domainApp.Dev
 	}
 }
 
-func MultipartFormFileHeaderToBytes(fileHeader *multipart.FileHeader) []byte {
-	file, _ := fileHeader.Open()
+func MultipartFormFileHeaderToBytes(fileHeader *multipart.FileHeader) ([]byte, error) {
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("failed to open uploaded file: %w", err)
+	}
 	defer file.Close()
 
-	fileBytes := make([]byte, fileHeader.Size)
-	_, _ = file.Read(fileBytes)
+	fileBytes, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read uploaded file: %w", err)
+	}
 
-	return fileBytes
+	return fileBytes, nil
 }

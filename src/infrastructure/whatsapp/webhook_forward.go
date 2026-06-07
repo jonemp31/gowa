@@ -146,6 +146,28 @@ func setCachedGroupName(groupJID, name string) {
 	})
 }
 
+func init() {
+	// Periodically evict expired entries from groupNameCache. Without this,
+	// entries for groups that are never queried again would accumulate
+	// indefinitely — getCachedGroupName only removes entries on a cache miss
+	// for that specific key, so unseen keys are never pruned.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			groupNameCache.Range(func(key, value any) bool {
+				if entry, ok := value.(groupNameCacheEntry); ok {
+					if now.After(entry.expiresAt) {
+						groupNameCache.Delete(key)
+					}
+				}
+				return true
+			})
+		}
+	}()
+}
+
 // getContactMutex returns a mutex for the given phone number to serialize contact operations.
 // Uses FNV-1a hash to distribute phones across shards for balanced lock contention.
 func getContactMutex(phone string) *sync.Mutex {

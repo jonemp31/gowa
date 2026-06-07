@@ -5,6 +5,7 @@ import (
 	"time"
 
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
+	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -92,7 +93,13 @@ func (r *deviceChatStorage) StoreMessagesBatch(messages []*domainChatStorage.Mes
 }
 
 func (r *deviceChatStorage) GetMessageByID(id string) (*domainChatStorage.Message, error) {
-	return r.base.GetMessageByID(id)
+	// Device-scoped: delegate to GetMessageByIDForDevice so the wrapper never
+	// returns a message that belongs to a different device.
+	return r.base.GetMessageByIDForDevice(id, r.deviceID)
+}
+
+func (r *deviceChatStorage) GetMessageByIDForDevice(id, deviceID string) (*domainChatStorage.Message, error) {
+	return r.base.GetMessageByIDForDevice(id, deviceID)
 }
 
 func (r *deviceChatStorage) GetMessageEdits(originalMessageID, deviceID string) ([]*domainChatStorage.MessageEdit, error) {
@@ -173,7 +180,8 @@ func (r *deviceChatStorage) TruncateAllChats() error {
 }
 
 func (r *deviceChatStorage) TruncateAllDataWithLogging(logPrefix string) error {
-	return r.base.TruncateAllDataWithLogging(logPrefix)
+	logrus.Infof("[%s] Deleting chat storage data for device %s", logPrefix, r.deviceID)
+	return r.base.DeleteDeviceData(r.deviceID)
 }
 
 func (r *deviceChatStorage) InitializeSchema() error {

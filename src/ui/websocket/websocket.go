@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/sirupsen/logrus"
 
@@ -22,7 +23,7 @@ type BroadcastMessage struct {
 var (
 	Clients    = make(map[*websocket.Conn]client)
 	Register   = make(chan *websocket.Conn)
-	Broadcast  = make(chan BroadcastMessage)
+	Broadcast  = make(chan BroadcastMessage, 256)
 	Unregister = make(chan *websocket.Conn)
 )
 
@@ -44,6 +45,7 @@ func broadcastMessage(message BroadcastMessage) {
 	}
 
 	for conn := range Clients {
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		if err := conn.WriteMessage(websocket.TextMessage, marshalMessage); err != nil {
 			logrus.Println("write error:", err)
 			closeConnection(conn)

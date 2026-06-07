@@ -73,7 +73,7 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 	// Store message asynchronously with timeout.
 	// Preserve device context (for device_id scoping) but detach from request cancellation.
 	go func() {
-		storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		storeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 
 		if err := service.chatStorageRepo.StoreSentMessageWithContext(storeCtx, ts.ID, senderJID, recipient.String(), content, ts.Timestamp, msg); err != nil {
@@ -174,7 +174,21 @@ func (service serviceSend) SendText(ctx context.Context, request domainSend.Mess
 
 	// Reply message
 	if request.ReplyMessageID != nil && *request.ReplyMessageID != "" {
-		message, err := service.chatStorageRepo.GetMessageByID(*request.ReplyMessageID)
+		// Scope the lookup to the current device to avoid returning a message
+		// from a different device if two devices happen to share the same message ID.
+		replyDeviceID := ""
+		if inst, ok := whatsapp.DeviceFromContext(ctx); ok && inst != nil {
+			replyDeviceID = inst.JID()
+			if replyDeviceID == "" {
+				replyDeviceID = inst.ID()
+			}
+		}
+		var message *domainChatStorage.Message
+		if replyDeviceID != "" {
+			message, err = service.chatStorageRepo.GetMessageByIDForDevice(*request.ReplyMessageID, replyDeviceID)
+		} else {
+			message, err = service.chatStorageRepo.GetMessageByID(*request.ReplyMessageID)
+		}
 		if err != nil {
 			logrus.Warnf("Error retrieving reply message ID %s: %v, continuing without reply context", *request.ReplyMessageID, err)
 		} else if message != nil { // Only set reply context if we found the message
@@ -432,7 +446,10 @@ func (service serviceSend) SendFile(ctx context.Context, request domainSend.File
 			return response, pkgError.InternalServerError(fmt.Sprintf("failed to download file from URL: %v", err))
 		}
 	} else if request.File != nil {
-		fileBytes = helpers.MultipartFormFileHeaderToBytes(request.File)
+		fileBytes, err = helpers.MultipartFormFileHeaderToBytes(request.File)
+		if err != nil {
+			return response, pkgError.InternalServerError(fmt.Sprintf("failed to read uploaded file: %v", err))
+		}
 		fileName = request.File.Filename
 	}
 
@@ -831,9 +848,17 @@ func (service serviceSend) SendVideo(ctx context.Context, request domainSend.Vid
 		return response, pkgError.InternalServerError("ffmpeg not installed")
 	}
 
+	// Bound all ffmpeg calls to a shared deadline derived from the request
+	// timeout, reserving 10s for the upload step that follows. exec.CommandContext
+	// sends SIGKILL to the process when the context expires, preventing orphaned
+	// ffmpeg processes when the HTTP request times out or is cancelled.
+	compressTimeout := time.Duration(config.AppRequestTimeoutSeconds-10) * time.Second
+	compCtx, compCancel := context.WithTimeout(ctx, compressTimeout)
+	defer compCancel()
+
 	// Generate thumbnail using ffmpeg
 	thumbnailVideoPath := fmt.Sprintf("%s/%s", config.PathSendItems, generateUUID+".png")
-	cmdThumbnail := exec.Command("ffmpeg", "-i", oriVideoPath, "-ss", "00:00:01.000", "-vframes", "1", thumbnailVideoPath)
+	cmdThumbnail := exec.CommandContext(compCtx, "ffmpeg", "-i", oriVideoPath, "-ss", "00:00:01.000", "-vframes", "1", thumbnailVideoPath)
 	err = cmdThumbnail.Run()
 	if err != nil {
 		return response, pkgError.InternalServerError(fmt.Sprintf("failed to create thumbnail %v", err))
@@ -865,7 +890,7 @@ func (service serviceSend) SendVideo(ctx context.Context, request domainSend.Vid
 		// -c:a aac: Use AAC codec for audio
 		// -movflags +faststart: Optimize for web streaming
 		// -vf scale=720:-2: Scale video to max width 720px, maintain aspect ratio
-		cmdCompress := exec.Command("ffmpeg", "-i", oriVideoPath,
+		cmdCompress := exec.CommandContext(compCtx, "ffmpeg", "-i", oriVideoPath,
 			"-c:v", "libx264",
 			"-crf", "28",
 			"-preset", "fast",
@@ -1192,7 +1217,10 @@ func (service serviceSend) SendAudio(ctx context.Context, request domainSend.Aud
 			audioDuration = getAudioDuration(tempAudioPath)
 		}
 	} else if request.Audio != nil {
-		audioBytes = helpers.MultipartFormFileHeaderToBytes(request.Audio)
+		audioBytes, err = helpers.MultipartFormFileHeaderToBytes(request.Audio)
+		if err != nil {
+			return response, pkgError.InternalServerError(fmt.Sprintf("failed to read uploaded audio: %v", err))
+		}
 		audioMimeType = resolveAudioMIME(request.Audio.Filename, audioBytes)
 
 		// Save to temp file to get duration
