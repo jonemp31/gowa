@@ -87,8 +87,7 @@ func NewSendService(appService app.IAppUsecase, chatStorageRepo domainChatStorag
 // once on WhatsApp error 463 after a SubscribePresence pre-warm — see
 // infrastructure/whatsapp/send_retry.go for the protocol-level rationale.
 func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeow.Client, recipient types.JID, msg *waE2E.Message, content string) (whatsmeow.SendResponse, error) {
-	const maxSendRetries = 2
-	retryDelay := 3 * time.Second
+	const maxSendRetries = 3
 
 	var ts whatsmeow.SendResponse
 	var lastErr error
@@ -118,14 +117,15 @@ func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeo
 		}
 
 		if attempt < maxSendRetries {
+			// Exponential backoff: 4s → 8s → 16s (4 * 2^attempt)
+			delay := time.Duration(4*(1<<uint(attempt))) * time.Second
 			logrus.Warnf("[SEND-RETRY] attempt %d/%d failed (%v) — retrying in %s",
-				attempt+1, maxSendRetries, lastErr, retryDelay)
+				attempt+1, maxSendRetries, lastErr, delay)
 			select {
-			case <-time.After(retryDelay):
+			case <-time.After(delay):
 			case <-ctx.Done():
 				return whatsmeow.SendResponse{}, ctx.Err()
 			}
-			retryDelay += 3 * time.Second // 3s → 6s
 		}
 	}
 
@@ -1966,7 +1966,7 @@ func (service serviceSend) uploadMedia(ctx context.Context, client *whatsmeow.Cl
 		}
 	}
 
-	const maxUploadRetries = 2
+	const maxUploadRetries = 3
 	for attempt := 0; attempt <= maxUploadRetries; attempt++ {
 		if recipient.Server == types.NewsletterServer {
 			uploaded, err = client.UploadNewsletter(ctx, media, mediaType)
@@ -1980,7 +1980,8 @@ func (service serviceSend) uploadMedia(ctx context.Context, client *whatsmeow.Cl
 			return uploaded, err
 		}
 		if attempt < maxUploadRetries {
-			delay := time.Duration(3*(attempt+1)) * time.Second
+			// Exponential backoff: 4s → 8s → 16s (4 * 2^attempt)
+			delay := time.Duration(4*(1<<uint(attempt))) * time.Second
 			logrus.Warnf("[UPLOAD-RETRY] attempt %d/%d failed (%v) — retrying in %s",
 				attempt+1, maxUploadRetries, err, delay)
 			select {
