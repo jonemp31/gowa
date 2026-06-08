@@ -55,11 +55,19 @@ var uploadRetryableErrors = []string{
 // IsConnected() guard, Caminho A) and the whatsmeow error emitted when the
 // connection drops mid-send (Caminho B). Both carry the same text but are
 // distinct error objects, so errors.Is alone is insufficient for Caminho B.
+//
+// "info query timed out" is safe to retry: it occurs when WhatsApp's server
+// fails to deliver pre-keys before the send is attempted. At that point no
+// message has been transmitted, so retrying cannot produce duplicates. This is
+// distinct from "timed out waiting for message send", where the message was
+// already transmitted and only the ACK is missing — that one is intentionally
+// left non-retryable to avoid duplicates.
 var sendConnectionRetryableErrors = []string{
 	"connection reset by peer",
 	"websocket not connected",
 	"websocket disconnected",
 	"not connect to services",
+	"info query timed out",
 }
 
 type serviceSend struct {
