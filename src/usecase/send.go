@@ -39,6 +39,29 @@ import (
 // webpCanvasSizeRegex is compiled once at package level for efficiency
 var webpCanvasSizeRegex = regexp.MustCompile(`Canvas size:\s*(\d+)\s*x\s*(\d+)`)
 
+// uploadRetryableErrors are transient CDN/media-connection errors safe to retry
+// in uploadMedia. No data has been delivered when these occur, so retrying is
+// side-effect-free and cannot produce duplicate messages.
+var uploadRetryableErrors = []string{
+	"failed to refresh media connections",
+	"failed to execute request",
+	"connection reset by peer",
+	"info query timed out",
+}
+
+// sendConnectionRetryableErrors are transient WebSocket/transport errors safe to
+// retry in wrapSendMessage. "not connect to services" is intentionally kept as a
+// substring match — it covers both pkgError.ErrNotConnected (set by the
+// IsConnected() guard, Caminho A) and the whatsmeow error emitted when the
+// connection drops mid-send (Caminho B). Both carry the same text but are
+// distinct error objects, so errors.Is alone is insufficient for Caminho B.
+var sendConnectionRetryableErrors = []string{
+	"connection reset by peer",
+	"websocket not connected",
+	"websocket disconnected",
+	"not connect to services",
+}
+
 type serviceSend struct {
 	appService      app.IAppUsecase
 	chatStorageRepo domainChatStorage.IChatStorageRepository
@@ -56,12 +79,50 @@ func NewSendService(appService app.IAppUsecase, chatStorageRepo domainChatStorag
 // once on WhatsApp error 463 after a SubscribePresence pre-warm — see
 // infrastructure/whatsapp/send_retry.go for the protocol-level rationale.
 func (service serviceSend) wrapSendMessage(ctx context.Context, client *whatsmeow.Client, recipient types.JID, msg *waE2E.Message, content string) (whatsmeow.SendResponse, error) {
-	if !client.IsConnected() {
-		return whatsmeow.SendResponse{}, pkgError.ErrNotConnected
+	const maxSendRetries = 2
+	retryDelay := 3 * time.Second
+
+	var ts whatsmeow.SendResponse
+	var lastErr error
+
+	for attempt := 0; attempt <= maxSendRetries; attempt++ {
+		if !client.IsConnected() {
+			// Caminho A: guard fires before the call. ErrNotConnected is covered
+			// by errors.Is inside isSendConnectionRetryable.
+			lastErr = pkgError.ErrNotConnected
+		} else {
+			ts, lastErr = whatsapp.SendMessageWithReachoutRetry(ctx, client, recipient, msg)
+			if lastErr != nil {
+				// normalizeSendError only transforms error 463 → ErrWaReachoutTimelock.
+				// All connection errors are returned as-is, preserving their text for
+				// the substring check in isSendConnectionRetryable (Caminho B).
+				lastErr = normalizeSendError(lastErr)
+			}
+		}
+
+		if lastErr == nil {
+			break
+		}
+
+		if !isSendConnectionRetryable(lastErr) {
+			// Non-retryable error (validation, 463 after pre-warm, timeout, etc.)
+			return whatsmeow.SendResponse{}, lastErr
+		}
+
+		if attempt < maxSendRetries {
+			logrus.Warnf("[SEND-RETRY] attempt %d/%d failed (%v) — retrying in %s",
+				attempt+1, maxSendRetries, lastErr, retryDelay)
+			select {
+			case <-time.After(retryDelay):
+			case <-ctx.Done():
+				return whatsmeow.SendResponse{}, ctx.Err()
+			}
+			retryDelay += 3 * time.Second // 3s → 6s
+		}
 	}
-	ts, err := whatsapp.SendMessageWithReachoutRetry(ctx, client, recipient, msg)
-	if err != nil {
-		return whatsmeow.SendResponse{}, normalizeSendError(err)
+
+	if lastErr != nil {
+		return whatsmeow.SendResponse{}, lastErr
 	}
 
 	// Store the sent message using chatstorage
@@ -118,6 +179,36 @@ func normalizeSendError(err error) error {
 		return pkgError.ErrWaReachoutTimelock
 	}
 	return err
+}
+
+// isUploadRetryable reports whether an uploadMedia error is safe to retry.
+// Upload failures are always safe to retry: no message is visible to the
+// recipient until both Upload and SendMessage succeed.
+func isUploadRetryable(errMsg string) bool {
+	for _, s := range uploadRetryableErrors {
+		if strings.Contains(errMsg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSendConnectionRetryable reports whether a wrapSendMessage error is a
+// transient connection failure worth retrying. errors.Is handles Caminho A
+// (ErrNotConnected returned by the IsConnected guard). The substring loop
+// handles Caminho B (whatsmeow fmt.Errorf with identical text but a different
+// error object) and other raw transport errors from the WhatsApp WebSocket.
+func isSendConnectionRetryable(err error) bool {
+	if errors.Is(err, pkgError.ErrNotConnected) {
+		return true
+	}
+	msg := err.Error()
+	for _, s := range sendConnectionRetryableErrors {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (service serviceSend) SendText(ctx context.Context, request domainSend.MessageRequest) (response domainSend.GenericResponse, err error) {
@@ -1867,10 +1958,29 @@ func (service serviceSend) uploadMedia(ctx context.Context, client *whatsmeow.Cl
 		}
 	}
 
-	if recipient.Server == types.NewsletterServer {
-		uploaded, err = client.UploadNewsletter(ctx, media, mediaType)
-	} else {
-		uploaded, err = client.Upload(ctx, media, mediaType)
+	const maxUploadRetries = 2
+	for attempt := 0; attempt <= maxUploadRetries; attempt++ {
+		if recipient.Server == types.NewsletterServer {
+			uploaded, err = client.UploadNewsletter(ctx, media, mediaType)
+		} else {
+			uploaded, err = client.Upload(ctx, media, mediaType)
+		}
+		if err == nil {
+			return uploaded, nil
+		}
+		if !isUploadRetryable(err.Error()) {
+			return uploaded, err
+		}
+		if attempt < maxUploadRetries {
+			delay := time.Duration(3*(attempt+1)) * time.Second
+			logrus.Warnf("[UPLOAD-RETRY] attempt %d/%d failed (%v) — retrying in %s",
+				attempt+1, maxUploadRetries, err, delay)
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return uploaded, ctx.Err()
+			}
+		}
 	}
 	return uploaded, err
 }
