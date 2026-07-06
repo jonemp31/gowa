@@ -2,9 +2,11 @@ package usecase
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
@@ -19,6 +21,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"go.mau.fi/libsignal/logger"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -244,6 +247,101 @@ func (service *serviceApp) ImportSession(ctx context.Context, deviceID string, c
 		IsLoggedIn: true,
 	}
 	return response, nil
+}
+
+// ImportPrivacyTokens seeds the connected device with trusted-contact (tc) tokens extracted
+// from the browser's chat model. Without them, a migrated session treats every existing
+// contact as a cold reachout and WhatsApp rejects sends with error 463. Tokens are stored
+// keyed by LID (the key resolveTCTokenStorageLID uses at send time) plus the phone JID as a
+// fallback, and the LID<->PN mapping is imported so a phone recipient resolves to its LID.
+func (service *serviceApp) ImportPrivacyTokens(ctx context.Context, deviceID string, req domainApp.ImportPrivacyTokensRequest) (response domainApp.ImportPrivacyTokensResponse, err error) {
+	if service.deviceManager == nil {
+		return response, fmt.Errorf("device manager not initialized")
+	}
+	instance, ok := service.deviceManager.GetDevice(deviceID)
+	if !ok || instance == nil {
+		return response, fmt.Errorf("device %s not found", deviceID)
+	}
+	client := instance.GetClient()
+	if client == nil || client.Store == nil {
+		return response, pkgError.ErrWaCLI
+	}
+
+	response.DeviceID = deviceID
+	for _, entry := range req.Tokens {
+		lidJID, okLID := parseLIDJID(entry.LID)
+		if !okLID {
+			response.Skipped++
+			continue
+		}
+		tokenBytes, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(entry.Token))
+		if decErr != nil || len(tokenBytes) == 0 {
+			response.Skipped++
+			continue
+		}
+		lidJID = lidJID.ToNonAD()
+
+		pnJID, okPN := parsePhoneJID(entry.Phone)
+		if okPN {
+			pnJID = pnJID.ToNonAD()
+			// Map phone -> LID so send-time resolveTCTokenStorageLID(phone) finds the LID key.
+			if mapErr := client.Store.LIDs.PutLIDMapping(ctx, lidJID, pnJID); mapErr != nil {
+				logrus.Debugf("[IMPORT_TOKENS][%s] PutLIDMapping %s<->%s failed: %v", deviceID, lidJID, pnJID, mapErr)
+			}
+		}
+
+		ts := time.Unix(entry.TcTokenTimestamp, 0)
+		senderTs := time.Unix(entry.TcTokenSenderTimestamp, 0)
+		tokens := []store.PrivacyToken{{User: lidJID, Token: tokenBytes, Timestamp: ts, SenderTimestamp: senderTs}}
+		if okPN {
+			tokens = append(tokens, store.PrivacyToken{User: pnJID, Token: tokenBytes, Timestamp: ts, SenderTimestamp: senderTs})
+		}
+		if putErr := client.Store.PrivacyTokens.PutPrivacyTokens(ctx, tokens...); putErr != nil {
+			logrus.Debugf("[IMPORT_TOKENS][%s] PutPrivacyTokens for %s failed: %v", deviceID, lidJID, putErr)
+			response.Skipped++
+			continue
+		}
+		response.Imported++
+	}
+
+	logrus.Infof("[IMPORT_TOKENS][%s] imported %d privacy tokens (skipped %d)", deviceID, response.Imported, response.Skipped)
+	return response, nil
+}
+
+// parseLIDJID parses "<user>@lid" (or bare "<user>") into a LID-server JID.
+func parseLIDJID(s string) (types.JID, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return types.JID{}, false
+	}
+	user := s
+	if at := strings.LastIndex(s, "@"); at >= 0 {
+		user = s[:at]
+	}
+	if colon := strings.Index(user, ":"); colon >= 0 {
+		user = user[:colon]
+	}
+	if user == "" {
+		return types.JID{}, false
+	}
+	return types.JID{User: user, Server: types.HiddenUserServer}, true
+}
+
+// parsePhoneJID parses a phone number (digits, optionally with an "@server" suffix) into a
+// standard user JID (@s.whatsapp.net).
+func parsePhoneJID(s string) (types.JID, bool) {
+	s = strings.TrimSpace(s)
+	if at := strings.Index(s, "@"); at >= 0 {
+		s = s[:at]
+	}
+	if colon := strings.Index(s, ":"); colon >= 0 {
+		s = s[:colon]
+	}
+	s = strings.TrimPrefix(s, "+")
+	if s == "" {
+		return types.JID{}, false
+	}
+	return types.JID{User: s, Server: types.DefaultUserServer}, true
 }
 
 func (service *serviceApp) Logout(ctx context.Context, deviceID string) error {

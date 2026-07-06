@@ -9,6 +9,7 @@ type IAppUsecase interface {
 	Login(ctx context.Context, deviceID string) (response LoginResponse, err error)
 	LoginWithCode(ctx context.Context, deviceID string, phoneNumber string) (loginCode string, err error)
 	ImportSession(ctx context.Context, deviceID string, creds BaileysCreds) (response ImportSessionResponse, err error)
+	ImportPrivacyTokens(ctx context.Context, deviceID string, req ImportPrivacyTokensRequest) (response ImportPrivacyTokensResponse, err error)
 	Logout(ctx context.Context, deviceID string) (err error)
 	Reconnect(ctx context.Context, deviceID string) (err error)
 	Status(ctx context.Context, deviceID string) (isConnected bool, isLoggedIn bool, err error)
@@ -60,6 +61,27 @@ type ImportSessionResponse struct {
 	DeviceID   string `json:"device_id"`
 	JID        string `json:"jid"`
 	IsLoggedIn bool   `json:"is_logged_in"`
+}
+
+// PrivacyTokenEntry is one trusted-contact (tc) token extracted from the browser's
+// in-memory chat model, used to pre-warm a migrated session so it can message existing
+// contacts without WhatsApp error 463.
+type PrivacyTokenEntry struct {
+	LID                    string `json:"lid"`   // "<user>@lid"
+	Phone                  string `json:"phone"` // phone number (digits) or "<user>@..."
+	Token                  string `json:"token"` // base64-encoded tc token
+	TcTokenTimestamp       int64  `json:"tc_token_timestamp"`
+	TcTokenSenderTimestamp int64  `json:"tc_token_sender_timestamp"`
+}
+
+type ImportPrivacyTokensRequest struct {
+	Tokens []PrivacyTokenEntry `json:"tokens"`
+}
+
+type ImportPrivacyTokensResponse struct {
+	DeviceID string `json:"device_id"`
+	Imported int    `json:"imported"`
+	Skipped  int    `json:"skipped"`
 }
 
 type DevicesResponse struct {

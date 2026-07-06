@@ -19,6 +19,7 @@ func InitRestApp(app fiber.Router, service domainApp.IAppUsecase) App {
 	app.Get("/app/login", rest.Login)
 	app.Get("/app/login-with-code", rest.LoginWithCode)
 	app.Post("/app/import-session", rest.ImportSession)
+	app.Post("/app/import-privacy-tokens", rest.ImportPrivacyTokens)
 	app.Get("/app/logout", rest.Logout)
 	app.Get("/app/reconnect", rest.Reconnect)
 	app.Get("/app/devices", rest.Devices)
@@ -90,6 +91,32 @@ func (handler *App) ImportSession(c *fiber.Ctx) error {
 		Status:  200,
 		Code:    "SUCCESS",
 		Message: "Session imported and connected",
+		Results: response,
+	})
+}
+
+func (handler *App) ImportPrivacyTokens(c *fiber.Ctx) error {
+	device, err := getDeviceInstance(c)
+	if err != nil {
+		return err
+	}
+
+	var req domainApp.ImportPrivacyTokensRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  fiber.StatusBadRequest,
+			Code:    "INVALID_REQUEST",
+			Message: "invalid privacy tokens JSON: " + err.Error(),
+		})
+	}
+
+	response, err := handler.Service.ImportPrivacyTokens(c.UserContext(), device.ID(), req)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Privacy tokens imported",
 		Results: response,
 	})
 }
