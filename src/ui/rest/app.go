@@ -18,6 +18,7 @@ func InitRestApp(app fiber.Router, service domainApp.IAppUsecase) App {
 	rest := App{Service: service}
 	app.Get("/app/login", rest.Login)
 	app.Get("/app/login-with-code", rest.LoginWithCode)
+	app.Post("/app/import-session", rest.ImportSession)
 	app.Get("/app/logout", rest.Logout)
 	app.Get("/app/reconnect", rest.Reconnect)
 	app.Get("/app/devices", rest.Devices)
@@ -64,6 +65,32 @@ func (handler *App) LoginWithCode(c *fiber.Ctx) error {
 			"device_id": device.ID(),
 			"pair_code": pairCode,
 		},
+	})
+}
+
+func (handler *App) ImportSession(c *fiber.Ctx) error {
+	device, err := getDeviceInstance(c)
+	if err != nil {
+		return err
+	}
+
+	var creds domainApp.BaileysCreds
+	if err := c.BodyParser(&creds); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  fiber.StatusBadRequest,
+			Code:    "INVALID_REQUEST",
+			Message: "invalid session credentials JSON: " + err.Error(),
+		})
+	}
+
+	response, err := handler.Service.ImportSession(c.UserContext(), device.ID(), creds)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Session imported and connected",
+		Results: response,
 	})
 }
 

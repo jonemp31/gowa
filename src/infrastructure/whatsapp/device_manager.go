@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
+	domainApp "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/app"
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	domainDevice "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/device"
 	fiberUtils "github.com/gofiber/fiber/v2/utils"
@@ -579,6 +580,17 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 		return nil, err
 	}
 
+	return m.attachClient(ctx, inst, storeDevice)
+}
+
+// attachClient builds and attaches a whatsmeow client for the given store device and
+// instance, wiring the fingerprint, keys store, proxy, event handler and chat storage.
+//
+// It was extracted from EnsureClient so the import-session flow reuses the exact same
+// client setup. The caller MUST hold inst.clientMu (EnsureClient and ImportSession both do).
+func (m *DeviceManager) attachClient(ctx context.Context, inst *DeviceInstance, storeDevice *store.Device) (*DeviceInstance, error) {
+	deviceID := inst.ID()
+
 	// Assign a fingerprint if the device doesn't have one yet
 	if inst.Fingerprint() == "" {
 		fp := RandomFingerprint()
@@ -657,6 +669,46 @@ func (m *DeviceManager) EnsureClient(ctx context.Context, deviceID string) (*Dev
 	inst.SetClient(client)
 	inst.UpdateStateFromClient()
 	return inst, nil
+}
+
+// ImportSession migrates an already-authenticated WhatsApp Web session (extracted by the
+// browser extension as Baileys-format credentials) into this manager: it converts the creds
+// into a store.Device, persists it, and attaches a client. It does NOT connect — the caller
+// (usecase) drives Connect() so it can apply a bounded timeout and verify IsLoggedIn().
+func (m *DeviceManager) ImportSession(ctx context.Context, deviceID string, creds domainApp.BaileysCreds) (*DeviceInstance, error) {
+	if m == nil {
+		return nil, fmt.Errorf("device manager not initialized")
+	}
+	if m.store == nil {
+		return nil, fmt.Errorf("store container is nil")
+	}
+
+	inst := m.ensureInstance(deviceID)
+
+	// Serialize with EnsureClient so a concurrent QR login can't race the import.
+	inst.clientMu.Lock()
+	defer inst.clientMu.Unlock()
+	inst.clientInitErr = nil
+
+	// Drop any pre-existing client (e.g. a half-started QR attempt) before replacing it.
+	if existing := inst.GetClient(); existing != nil {
+		existing.Disconnect()
+	}
+
+	dev, err := BuildDeviceFromBaileysCreds(m.store, creds)
+	if err != nil {
+		inst.clientInitErr = fmt.Errorf("failed to build device from credentials: %w", err)
+		return nil, inst.clientInitErr
+	}
+
+	// PutDevice persists the device AND wires its sub-stores (initializeDevice runs because
+	// Initialized == false). This must happen before attachClient/Connect.
+	if err := m.store.PutDevice(ctx, dev); err != nil {
+		inst.clientInitErr = fmt.Errorf("failed to persist imported device: %w", err)
+		return nil, inst.clientInitErr
+	}
+
+	return m.attachClient(ctx, inst, dev)
 }
 
 func (m *DeviceManager) ensureInstance(deviceID string) *DeviceInstance {

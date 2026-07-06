@@ -160,6 +160,92 @@ func (service *serviceApp) LoginWithCode(ctx context.Context, deviceID string, p
 	return loginCode, nil
 }
 
+// ImportSession migrates an already-authenticated WhatsApp Web session (extracted by the
+// browser extension as Baileys credentials) into the given device, then connects it.
+func (service *serviceApp) ImportSession(ctx context.Context, deviceID string, creds domainApp.BaileysCreds) (response domainApp.ImportSessionResponse, err error) {
+	if err = validations.ValidateImportSession(ctx, creds); err != nil {
+		logrus.Errorf("[IMPORT][%s] validation failed: %v", deviceID, err)
+		return response, err
+	}
+
+	if service.deviceManager == nil {
+		return response, fmt.Errorf("device manager not initialized")
+	}
+
+	instance, err := service.deviceManager.ImportSession(ctx, deviceID, creds)
+	if err != nil {
+		return response, err
+	}
+
+	client := instance.GetClient()
+	if client == nil {
+		return response, pkgError.ErrWaCLI
+	}
+
+	// Connect with a bounded timeout (same pattern as Reconnect) so a hung handshake
+	// doesn't block the HTTP handler indefinitely.
+	type connectResult struct{ err error }
+	ch := make(chan connectResult, 1)
+	go func() { ch <- connectResult{client.Connect()} }()
+	connectTimeout := time.Duration(config.ReconnectTimeoutSeconds) * time.Second
+	if connectTimeout <= 0 {
+		connectTimeout = 15 * time.Second
+	}
+	select {
+	case res := <-ch:
+		err = res.err
+	case <-time.After(connectTimeout):
+		client.Disconnect()
+		return response, fmt.Errorf("connect timeout after %s", connectTimeout)
+	}
+	if err != nil {
+		logrus.Errorf("[IMPORT][%s] connect failed: %v", deviceID, err)
+		return response, fmt.Errorf("failed to connect imported session: %w", err)
+	}
+
+	// Connect() only establishes the socket; login is confirmed asynchronously when the
+	// server sends connect-success (whatsmeow flips isLoggedIn only then). Invalid or
+	// revoked credentials never reach that state, so poll until confirmed or the deadline.
+	loginDeadline := time.Now().Add(connectTimeout)
+	for !client.IsLoggedIn() && time.Now().Before(loginDeadline) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	instance.UpdateStateFromClient()
+	if !client.IsLoggedIn() {
+		client.Disconnect()
+		return response, fmt.Errorf("imported session connected but did not reach logged-in state (credentials may be invalid or revoked)")
+	}
+
+	// Persist the device record with the resolved JID so the session survives restarts.
+	if service.chatStorageRepo != nil {
+		if err := service.chatStorageRepo.SaveDeviceRecord(&domainChatStorage.DeviceRecord{
+			DeviceID:    deviceID,
+			DisplayName: instance.DisplayName(),
+			JID:         instance.JID(),
+			ProxyURL:    instance.ProxyURL(),
+			Fingerprint: instance.Fingerprint(),
+			UpdatedAt:   time.Now(),
+		}); err != nil {
+			logrus.WithError(err).Warnf("[IMPORT][%s] failed to persist device record", deviceID)
+		}
+	}
+
+	// Broadcast login success (parity with the QR login flow, which emits this on PairSuccess).
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "LOGIN_SUCCESS",
+		Message: fmt.Sprintf("Device %s logged in via imported session", deviceID),
+		Result:  map[string]any{"device_id": deviceID, "jid": instance.JID()},
+	}
+
+	logrus.Infof("[IMPORT][%s] session imported successfully, JID=%s", deviceID, instance.JID())
+	response = domainApp.ImportSessionResponse{
+		DeviceID:   deviceID,
+		JID:        instance.JID(),
+		IsLoggedIn: true,
+	}
+	return response, nil
+}
+
 func (service *serviceApp) Logout(ctx context.Context, deviceID string) error {
 	if service.deviceManager == nil {
 		return fmt.Errorf("device manager not initialized")
